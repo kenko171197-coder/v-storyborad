@@ -71,6 +71,30 @@ export interface VideoBeat {
   noteVi: string;
 }
 
+// --- Hồ sơ cảnh: khoá chung cho mọi beat trong cùng một cảnh ---
+export interface SceneBible {
+  /** true = áp dụng cho mọi beat; false = giữ nội dung nhưng tạm không dùng */
+  enabled: boolean;
+  /** Phong cách hình ảnh, bảng màu, ánh sáng, ống kính (tiếng Anh, gọi tham chiếu bằng @tên) */
+  style: string;
+  /** Bối cảnh: bố trí không gian, vật liệu, nguồn sáng, giờ trong ngày (tiếng Anh) */
+  location: string;
+  /** Vị trí và hướng của nhân vật trong khung hình, giữ theo trục 180° (tiếng Anh) */
+  blocking: string;
+  /** id tham chiếu -> cụm danh từ tiếng Anh cố định, ví dụ "the tan mastiff dog with a red collar" */
+  descriptors: Record<string, string>;
+}
+
+/** Trạng thái ở cuối beat (tiếng Việt); panel 1 của beat nối tiếp phải bắt đầu đúng từ đây. */
+export interface EndState {
+  /** Vị trí, tư thế, hướng nhìn của từng nhân vật */
+  positions: string;
+  /** Đồ vật đang ở đâu, trong tay ai */
+  props: string;
+  /** Những gì đã thay đổi trong beat (trang phục, đồ bị vỡ, ánh sáng...) */
+  changes: string;
+}
+
 export interface GeneratedData {
   summaryVi: string;
   sceneEn: string;
@@ -82,6 +106,10 @@ export interface GeneratedData {
   videoBeats: VideoBeat[];
   audio: { ambience: string; music: string; sfx: string };
   audioNoteVi: string;
+  /** Có thể thiếu ở project cũ */
+  endState?: EndState;
+  /** Bối cảnh và hướng nhân vật lấy từ hồ sơ cảnh lúc tạo (dạng token {{tên}}) */
+  scene?: { location: string; blocking: string };
 }
 
 export interface BeatSequence {

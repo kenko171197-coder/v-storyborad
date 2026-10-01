@@ -6,19 +6,25 @@ import {
   PenLine, LayoutGrid, FilePlus,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { generateBeatPrompts, planBeat } from './gemini.ts';
+import { draftSceneBible, generateBeatPrompts, planBeat } from './gemini.ts';
+import { EndStateCard, SceneBibleCard } from './SceneCards.tsx';
 import SettingsModal from './SettingsModal.tsx';
 import { copyText, newId } from './id.ts';
 import { clearDraft, loadDraft, saveDraft } from './storage.ts';
 import { getPromptFormat, hasApiKey, savePromptFormat } from './settings.ts';
 import {
   MAX_TOTAL_SEC,
+  activeBible,
   analyzePlan,
+  bibleKey,
   buildGridImagePrompt,
   buildRefs,
   buildVideoPrompt,
   canonicalScript,
   duplicateRefNames,
+  emptyBible,
+  emptyEndState,
+  hasBibleContent,
   parseScript,
   scriptMentions,
   refCharacters,
@@ -26,6 +32,7 @@ import {
   planBlockReason,
   planKey,
   timeline,
+  tokensToMentions,
   totalDuration,
 } from './assemble.ts';
 import type {
@@ -33,11 +40,13 @@ import type {
   BeatSequence,
   Character,
   EditMode,
+  EndState,
   GeneratedData,
   PanelPlan,
   PanelRole,
   PlanPanel,
   PromptFormat,
+  SceneBible,
 } from './types.ts';
 
 const PROJECT_VERSION = '2.1';
@@ -53,6 +62,8 @@ interface Result {
   plan: PanelPlan; // bản plan đã dùng để tạo prompt
   data: GeneratedData;
   aspect: AspectRatio;
+  /** Hồ sơ cảnh lúc tạo; undefined = không kiểm tra (beat khôi phục từ lịch sử, project cũ) */
+  sceneKey?: string;
 }
 
 // --- Small components ---
@@ -196,6 +207,8 @@ export default function App() {
   const [contextBeat, setContextBeat] = useState<BeatSequence | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [history, setHistory] = useState<BeatSequence[]>([]);
+  const [bible, setBible] = useState<SceneBible>(emptyBible);
+  const [isDrafting, setIsDrafting] = useState(false);
   /** Beat đang hiển thị trong phần kết quả (id trong lịch sử), dùng làm "beat trước" khi nối tiếp */
   const [currentBeatId, setCurrentBeatId] = useState<string | null>(null);
   /** Đã nạp xong bản nháp tự lưu chưa (chưa nạp xong thì không ghi đè) */
@@ -226,7 +239,11 @@ export default function App() {
   const blockReason = plan ? planBlockReason(plan) : null;
 
   const stale =
-    !!result && !!plan && (planKey(plan) !== planKey(result.plan) || aspect !== result.aspect);
+    !!result &&
+    !!plan &&
+    (planKey(plan) !== planKey(result.plan) ||
+      aspect !== result.aspect ||
+      (result.sceneKey !== undefined && result.sceneKey !== bibleKey(bible)));
 
   const gridPrompt = useMemo(
     () => (result ? buildGridImagePrompt(result.plan, result.data, characters, result.aspect, promptFormat) : ''),
@@ -284,6 +301,7 @@ export default function App() {
     contextBeat,
     currentBeatId,
     continueFromPrev,
+    sceneBible: bible,
   });
 
   const handleSaveProject = () => {
@@ -314,6 +332,7 @@ export default function App() {
     setCurrentBeatId(null);
     setSelectedCharacterId(null);
     setMentionQuery(null);
+    setBible(emptyBible());
 
     if (data.version !== PROJECT_VERSION) {
       // Project cũ (bản 3x3 / 2x2 trước đây) có cấu trúc dữ liệu khác, không nạp lại được.
@@ -331,6 +350,7 @@ export default function App() {
     setContextBeat(data.contextBeat ?? null);
     setCurrentBeatId(data.currentBeatId ?? null);
     setContinueFromPrev(!!data.continueFromPrev);
+    setBible({ ...emptyBible(), ...(data.sceneBible ?? {}) });
     return true;
   };
 
@@ -388,7 +408,7 @@ export default function App() {
     latestDraft.current = projectSnapshot(scriptText);
     const timer = setTimeout(() => saveDraft(latestDraft.current), 400);
     return () => clearTimeout(timer);
-  }, [hydrated, characters, scriptText, aspect, plan, planScript, result, history, contextBeat, currentBeatId, continueFromPrev]);
+  }, [hydrated, characters, scriptText, aspect, plan, planScript, result, history, contextBeat, currentBeatId, continueFromPrev, bible]);
 
   // Ghi ngay khi rời trang / chuyển sang ứng dụng khác, không chờ hết thời gian chờ ở trên.
   useEffect(() => {
@@ -510,7 +530,7 @@ export default function App() {
     setIsPlanning(true);
     setMobileTab('result');
     try {
-      const p = await planBeat(text, characters, prev);
+      const p = await planBeat(text, characters, prev, bible);
       setPlan(p);
       setPlanScript(text);
       setContextBeat(prev);
@@ -541,12 +561,14 @@ export default function App() {
 
     const snapshot: PanelPlan = JSON.parse(JSON.stringify(plan));
     const text = planScript || scriptText;
+    // Lấy bản mới nhất của beat trước (trạng thái cuối có thể đã được sửa sau khi phân tích panel).
+    const prev = contextBeat ? (history.find((h) => h.id === contextBeat.id) ?? contextBeat) : null;
     setError('');
     setIsGenerating(true);
     try {
-      const data = await generateBeatPrompts(text, snapshot, characters, aspect, contextBeat);
+      const data = await generateBeatPrompts(text, snapshot, characters, aspect, prev, bible);
       const beatId = newId();
-      setResult({ plan: snapshot, data, aspect });
+      setResult({ plan: snapshot, data, aspect, sceneKey: bibleKey(bible) });
       setCurrentBeatId(beatId);
       // Cuộn tới phần prompt vừa tạo (hữu ích nhất trên di động, nơi phần kết quả nằm dưới 4 panel).
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
@@ -558,7 +580,7 @@ export default function App() {
           aspect,
           plan: snapshot,
           generatedData: data,
-          prevId: contextBeat?.id,
+          prevId: prev?.id,
         },
         ...prev,
       ]);
@@ -567,6 +589,56 @@ export default function App() {
       setError(errorText('Không tạo được prompt. Kiểm tra API key và model trong Cài đặt.', err));
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  // --- Hồ sơ cảnh (thao tác) ---
+  const handleDraftBible = async () => {
+    if (!hasApiKey()) {
+      setError('Chưa có API key. Nhập key trong Cài đặt rồi thử lại.');
+      setShowSettings(true);
+      return;
+    }
+    if (hasBibleContent(bible) && !confirm('Thay hồ sơ cảnh hiện tại bằng bản nháp mới của AI?')) return;
+    setError('');
+    setIsDrafting(true);
+    try {
+      const text = canonicalScript((editorRef.current?.innerText ?? scriptText).trim(), characters);
+      const d = await draftSceneBible(characters, text);
+      setBible({ enabled: true, ...d });
+    } catch (err) {
+      console.error(err);
+      setError(errorText('Không viết được hồ sơ cảnh. Kiểm tra API key và model trong Cài đặt.', err));
+    } finally {
+      setIsDrafting(false);
+    }
+  };
+
+  const takeBibleFromResult = () => {
+    if (!result) return;
+    if (hasBibleContent(bible) && !confirm('Thay phong cách và mô tả tham chiếu trong hồ sơ cảnh bằng của beat đang xem?')) {
+      return;
+    }
+    const d = result.data;
+    setBible((b) => ({
+      ...b,
+      enabled: true,
+      style: tokensToMentions(d.styleBlock),
+      location: d.scene?.location ? tokensToMentions(d.scene.location) : b.location || tokensToMentions(d.imagePanels[0]?.environment ?? ''),
+      blocking: d.scene?.blocking ? tokensToMentions(d.scene.blocking) : b.blocking,
+      descriptors: { ...b.descriptors, ...d.descriptors },
+    }));
+  };
+
+  // --- Trạng thái cuối beat (sửa cả kết quả đang xem và mục tương ứng trong lịch sử) ---
+  const updateEndState = (patch: Partial<EndState>) => {
+    const merge = (d: GeneratedData): GeneratedData => ({
+      ...d,
+      endState: { ...emptyEndState(), ...d.endState, ...patch },
+    });
+    setResult((r) => (r ? { ...r, data: merge(r.data) } : r));
+    if (currentBeatId) {
+      setHistory((h) => h.map((item) => (item.id === currentBeatId ? { ...item, generatedData: merge(item.generatedData) } : item)));
     }
   };
 
@@ -744,6 +816,19 @@ export default function App() {
               </p>
             )}
           </section>
+
+          <SceneBibleCard
+            bible={bible}
+            refs={refCharacters(characters)}
+            drafting={isDrafting}
+            canTakeFromResult={!!result}
+            onChange={(patch) => setBible((b) => ({ ...b, ...patch }))}
+            onDraft={handleDraftBible}
+            onTakeFromResult={takeBibleFromResult}
+            onClear={() => {
+              if (confirm('Xoá hồ sơ cảnh?')) setBible(emptyBible());
+            }}
+          />
 
           {/* Script / one beat */}
           <section className="bg-white p-5 sm:p-6 rounded-[28px] border border-stone-200/60 shadow-sm flex-1 flex flex-col min-h-0">
@@ -942,6 +1027,28 @@ export default function App() {
                 <div className="lg:hidden p-3 bg-red-50 text-red-600 text-xs font-semibold rounded-xl border border-red-100 flex items-start gap-2 leading-relaxed">
                   <X size={12} className="shrink-0 mt-0.5" />
                   <span className="break-words min-w-0">{error}</span>
+                </div>
+              )}
+
+              {(contextBeat || activeBible(bible)) && (
+                <div className="flex flex-col gap-2 text-[13px] text-stone-600 bg-stone-50/70 border border-stone-100 rounded-2xl px-4 py-3 leading-relaxed">
+                  {contextBeat && (
+                    <p>
+                      <span className="font-bold text-stone-800">Nối tiếp beat trước: </span>
+                      {contextBeat.plan.beatSummary || contextBeat.scriptText.slice(0, 80)}
+                      {contextBeat.generatedData.endState?.positions && (
+                        <span className="block text-stone-400">
+                          Bắt đầu từ: {contextBeat.generatedData.endState.positions}
+                        </span>
+                      )}
+                    </p>
+                  )}
+                  {activeBible(bible) && (
+                    <p className="flex items-center gap-1.5">
+                      <span className="font-bold text-gold-dark">Đang dùng hồ sơ cảnh đã khoá</span>
+                      <span className="text-stone-400">(phong cách, bối cảnh, mô tả tham chiếu)</span>
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -1216,6 +1323,8 @@ export default function App() {
                   hint={`Một prompt duy nhất, ${fmtSec(resultTotal)}s (tiếng Anh, có timecode)`}
                   text={videoPrompt}
                 />
+
+                <EndStateCard endState={{ ...emptyEndState(), ...result.data.endState }} onChange={updateEndState} />
 
                 <div className="bg-white rounded-[28px] border border-stone-200/60 shadow-sm p-5 sm:p-6">
                   <h3 className="text-sm font-black mb-4">Cách dùng</h3>

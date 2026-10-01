@@ -2,10 +2,12 @@ import type {
   AspectRatio,
   BeatSequence,
   Character,
+  EndState,
   GeneratedData,
   PanelPlan,
   PanelRole,
   PromptFormat,
+  SceneBible,
 } from './types.ts';
 import { newId } from './id.ts';
 
@@ -250,6 +252,68 @@ export function detectRefIds(characters: Character[], scriptText: string, aiName
     .map((c) => c.id);
 }
 
+// --- Hồ sơ cảnh ---
+export const emptyBible = (): SceneBible => ({
+  enabled: false,
+  style: '',
+  location: '',
+  blocking: '',
+  descriptors: {},
+});
+
+export const hasBibleContent = (b: SceneBible): boolean =>
+  !!(b.style.trim() || b.location.trim() || b.blocking.trim()) ||
+  Object.values(b.descriptors).some((d) => !!d.trim());
+
+/** Hồ sơ cảnh đang được áp dụng (bật và có nội dung), hoặc null. */
+export function activeBible(b: SceneBible | null | undefined): SceneBible | null {
+  return b?.enabled && hasBibleContent(b) ? b : null;
+}
+
+/** Dấu vân tay của hồ sơ cảnh, để biết prompt đã tạo có còn khớp không. */
+export const bibleKey = (b: SceneBible | null | undefined): string => {
+  const a = activeBible(b);
+  return a ? JSON.stringify([a.style, a.location, a.blocking, a.descriptors]) : '';
+};
+
+/** "@cho" trong hồ sơ cảnh -> "{{cho}}" để được đổi theo định dạng prompt giống chữ do AI viết. */
+export const mentionsToTokens = (text: string, characters: Character[]): string =>
+  parseScript(text, characters)
+    .map((p) => (p.kind === 'text' ? p.text : p.kind === 'ref' ? `{{${p.ref.name.trim()}}}` : `@${p.name}`))
+    .join('');
+
+/** "{{cho}}" -> "@cho", dùng khi lấy phong cách từ một beat đã tạo vào hồ sơ cảnh. */
+export const tokensToMentions = (text: string): string =>
+  text.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, n: string) => `@${n.trim()}`);
+
+/**
+ * Áp hồ sơ cảnh lên kết quả AI: phong cách và mô tả tham chiếu lấy nguyên văn từ hồ sơ
+ * (AI không được viết lại), bối cảnh và hướng nhân vật được lưu kèm để ghép vào prompt.
+ */
+export function applyBible(
+  data: GeneratedData,
+  bible: SceneBible | null,
+  characters: Character[],
+  refs: RefInfo[],
+): GeneratedData {
+  const b = activeBible(bible);
+  if (!b) return data;
+  const descriptors = { ...data.descriptors };
+  refs.forEach((r) => {
+    const d = (b.descriptors[r.id] ?? '').trim();
+    if (d) descriptors[r.id] = d;
+  });
+  return {
+    ...data,
+    styleBlock: b.style.trim() ? mentionsToTokens(b.style.trim(), characters) : data.styleBlock,
+    descriptors,
+    scene: {
+      location: mentionsToTokens(b.location.trim(), characters),
+      blocking: mentionsToTokens(b.blocking.trim(), characters),
+    },
+  };
+}
+
 type TokenMode = 'plain' | 'apiImage' | 'apiVideo';
 
 /**
@@ -308,6 +372,12 @@ export function buildGridImagePrompt(
     );
   }
   out.push(`Scene: ${sentence(r(data.sceneEn))}`);
+  if (data.scene?.location) {
+    out.push(`Location (identical in all four panels and in every shot of this scene): ${sentence(r(data.scene.location))}`);
+  }
+  if (data.scene?.blocking) {
+    out.push(`Screen direction (keep everyone on the same side of the frame): ${sentence(r(data.scene.blocking))}`);
+  }
   out.push(`Shared style and consistency (identical in all four panels): ${sentence(r(data.styleBlock))}`);
 
   data.imagePanels.forEach((p, i) => {
@@ -355,6 +425,10 @@ export function buildVideoPrompt(
       ? 'Format: One single continuous shot, no scene cuts, no jump cuts.'
       : 'Format: Hard cuts between the four beats, one clean shot per beat.',
   );
+  if (data.scene?.location) out.push(`Location: ${sentence(r(data.scene.location))}`);
+  if (data.scene?.blocking) {
+    out.push(`Screen direction (do not cross the line; keep everyone on the same side of the frame): ${sentence(r(data.scene.blocking))}`);
+  }
   out.push(`Style and consistency: ${sentence(r(data.styleBlock))}`);
 
   data.videoBeats.forEach((b, i) => {
@@ -392,16 +466,32 @@ export function describePreviousBeat(seq: BeatSequence): string {
   const last = panels[panels.length - 1];
   const img = seq.generatedData.imagePanels[seq.generatedData.imagePanels.length - 1];
   const vid = seq.generatedData.videoBeats[seq.generatedData.videoBeats.length - 1];
+  const end = seq.generatedData.endState;
   return [
     `Previous beat summary: ${seq.plan.beatSummary}`,
-    last ? `Final panel of the previous beat (the state this beat must continue from): ${last.moment}` : '',
+    last ? `Final panel of the previous beat: ${last.moment}` : '',
     img ? `Final panel visuals: ${img.content} Setting: ${img.environment}` : '',
     vid ? `Final video beat: ${vid.action}` : '',
+    end && hasEndState(end)
+      ? [
+          'END STATE of the previous beat (authoritative; panel 1 of this beat must start exactly from it):',
+          end.positions ? `- Positions, poses, facing: ${end.positions}` : '',
+          end.props ? `- Props: ${end.props}` : '',
+          end.changes ? `- Changes that persist: ${end.changes}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : '',
     `Established style: ${seq.generatedData.styleBlock}`,
   ]
     .filter(Boolean)
     .join('\n');
 }
+
+export const emptyEndState = (): EndState => ({ positions: '', props: '', changes: '' });
+
+export const hasEndState = (e: EndState | undefined): boolean =>
+  !!e && !!(e.positions.trim() || e.props.trim() || e.changes.trim());
 
 // --- Chuẩn hóa dữ liệu AI trả về (không tin tuyệt đối vào schema) ---
 export function normalizePlan(raw: any, refIds: string[]): PanelPlan {
@@ -475,6 +565,11 @@ export function normalizeGenerated(raw: any, refs: RefInfo[]): GeneratedData {
       sfx: str(raw?.audio?.sfx),
     },
     audioNoteVi: str(raw?.audioNoteVi),
+    endState: {
+      positions: str(raw?.endState?.positions),
+      props: str(raw?.endState?.props),
+      changes: str(raw?.endState?.changes),
+    },
   };
 }
 

@@ -17,11 +17,20 @@ Tham chiếu gồm cả nhân vật và vật dụng có ảnh. Chỉ những th
 
 Tổng thời lượng 4 panel không được vượt 10 giây (giới hạn của Omni cho mỗi lần tạo).
 
+## Đồng bộ các beat trong cùng một cảnh
+
+- **Hồ sơ cảnh** (thẻ ở thanh bên, dưới phần Tham chiếu): phong cách, bối cảnh, vị trí/hướng nhân vật (trục 180°) và mô tả cố định của từng tham chiếu, viết bằng tiếng Anh, gọi tham chiếu bằng `@tên`.
+  - **AI viết nháp**: AI đọc ảnh tham chiếu và kịch bản rồi viết bản nháp; bạn sửa lại.
+  - **Lấy từ beat đang xem**: lấy phong cách và mô tả tham chiếu của beat bạn ưng ý.
+  - Khi bật **Khoá cho mọi beat**, mọi beat dùng nguyên văn hồ sơ này (AI không viết lại phong cách và mô tả tham chiếu); prompt ảnh và video có thêm dòng *Location* và *Screen direction*. Sửa hồ sơ sau khi tạo prompt sẽ hiện cảnh báo prompt đã cũ.
+- **Trạng thái cuối beat** (dưới prompt video): vị trí và tư thế, đồ vật, thay đổi cần giữ ở cuối panel 4. AI ghi sẵn, bạn sửa được. Khi bật **Nối tiếp beat trước**, panel 1 của beat sau bắt buộc bắt đầu từ trạng thái này.
+
 ## Cấu trúc mã
 
 - `src/assemble.ts` — logic thuần: thời lượng, cảnh báo, chuẩn hóa dữ liệu AI, ghép prompt cuối. Timecode và thoại được ghép bằng code, không phụ thuộc AI.
 - `src/gemini.ts` — hai lời gọi Gemini (đề xuất plan; viết nội dung chi tiết từ plan đã sửa), dùng `responseSchema`.
 - `src/App.tsx` — giao diện.
+- `src/SceneCards.tsx` — thẻ Hồ sơ cảnh và Trạng thái cuối beat.
 - `src/SettingsModal.tsx`, `src/settings.ts` — hộp Cài đặt và lưu key/model.
 - `src/types.ts` — kiểu dữ liệu.
 
