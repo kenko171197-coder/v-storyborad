@@ -5,6 +5,7 @@ Công cụ chia **một beat** (6–10 giây) thành lưới storyboard **2x2** 
 ## Luồng làm việc
 
 1. Thêm nhân vật (ảnh + mô tả), viết nội dung của một beat trong ô *Script / Idea*.
+   Có thể dán sẵn kịch bản có `@tên`: app tự gắn `@tên` với tham chiếu cùng tên (không phân biệt hoa thường, có dấu hay không dấu, ví dụ `@Chó` khớp với `cho`). Tên chưa có tham chiếu sẽ được báo bên dưới ô kịch bản.
 2. Bấm **Phân tích panel**: AI chia beat thành đúng 4 panel (khoảnh khắc chính, cỡ cảnh, thời lượng, thoại, hành động giữa các panel).
 3. **Sửa panel plan** (nội dung, cỡ cảnh, thời lượng, thoại, thứ tự, kiểu dựng liền/cắt cảnh).
 4. Bấm **Tạo prompt**: app trả về prompt ảnh lưới 2x2 và prompt video Omni (có timecode, âm thanh, thoại đúng mốc).

@@ -17,7 +17,10 @@ import {
   buildGridImagePrompt,
   buildRefs,
   buildVideoPrompt,
+  canonicalScript,
   duplicateRefNames,
+  parseScript,
+  scriptMentions,
   refCharacters,
   fmtSec,
   planBlockReason,
@@ -123,6 +126,33 @@ const DurationBar = ({ plan }: { plan: PanelPlan }) => {
       </div>
     </div>
   );
+};
+
+const CHIP_CLASS =
+  'inline-flex items-center gap-1 bg-gold-light text-gold-dark px-1.5 py-0.5 rounded-md font-medium mx-0.5 select-none';
+
+/** Thẻ @tên trong ô kịch bản (không sửa được bên trong, xóa bằng Backspace như một ký tự). */
+const makeChip = (name: string) => {
+  const span = document.createElement('span');
+  span.className = CHIP_CLASS;
+  span.contentEditable = 'false';
+  span.textContent = `@${name || 'Unnamed'}`;
+  return span;
+};
+
+/** Dựng nội dung ô kịch bản từ chữ thường: @tên khớp tham chiếu thành thẻ, xuống dòng thành <br>. */
+const scriptFragment = (text: string, characters: Character[]) => {
+  const frag = document.createDocumentFragment();
+  const addText = (t: string) =>
+    t.split('\n').forEach((line, i) => {
+      if (i > 0) frag.appendChild(document.createElement('br'));
+      if (line) frag.appendChild(document.createTextNode(line));
+    });
+  parseScript(text.replace(/\r\n?/g, '\n'), characters).forEach((p) => {
+    if (p.kind === 'ref') frag.appendChild(makeChip(p.ref.name.trim()));
+    else addText(p.kind === 'text' ? p.text : `@${p.name}`);
+  });
+  return frag;
 };
 
 /** Ô số giây: cho phép xóa trống khi đang gõ (lúc đó thời lượng tính là 0 và nút Tạo prompt bị chặn). */
@@ -270,15 +300,16 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const setEditorText = (text: string) => {
+  const setEditorText = (text: string, chars: Character[] = characters) => {
     setScriptText(text);
-    if (editorRef.current) editorRef.current.innerText = text;
+    editorRef.current?.replaceChildren(scriptFragment(text, chars));
   };
 
   /** Nạp dữ liệu project (từ file hoặc từ bản nháp tự lưu). Trả về false nếu là project bản cũ. */
   const applyProject = (data: any): boolean => {
-    setCharacters(Array.isArray(data.characters) ? data.characters : []);
-    setEditorText(typeof data.scriptText === 'string' ? data.scriptText : '');
+    const chars: Character[] = Array.isArray(data.characters) ? data.characters : [];
+    setCharacters(chars);
+    setEditorText(typeof data.scriptText === 'string' ? data.scriptText : '', chars);
     setContextBeat(null);
     setCurrentBeatId(null);
     setSelectedCharacterId(null);
@@ -404,11 +435,7 @@ export default function App() {
       range.setStart(node, range.startOffset - match[0].length);
       range.deleteContents();
 
-      const span = document.createElement('span');
-      span.className =
-        'inline-flex items-center gap-1 bg-gold-light text-gold-dark px-1.5 py-0.5 rounded-md font-medium mx-0.5 select-none';
-      span.contentEditable = 'false';
-      span.innerText = `@${char.name || 'Unnamed'}`;
+      const span = makeChip(char.name.trim());
 
       range.insertNode(span);
       const space = document.createTextNode('\u00A0');
@@ -422,6 +449,41 @@ export default function App() {
     }
   };
 
+  /** Dán kịch bản: chỉ lấy chữ (bỏ định dạng), @tên khớp tham chiếu tự thành thẻ. */
+  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection?.rangeCount) return;
+    e.preventDefault();
+    const text = e.clipboardData.getData('text/plain');
+    if (!text) return;
+
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const frag = scriptFragment(text, characters);
+    const last = frag.lastChild;
+    range.insertNode(frag);
+    if (last) {
+      range.setStartAfter(last);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+    setMentionQuery(null);
+    setScriptText(editor.innerText);
+  };
+
+  // Khi thêm hoặc đổi tên tham chiếu, các @tên đã có trong kịch bản được gắn lại thành thẻ.
+  // Chỉ làm khi không gõ trong ô kịch bản, để không làm nhảy con trỏ.
+  const refNamesKey = refCharacters(characters)
+    .map((c) => `${c.id}:${c.name}`)
+    .join('|');
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!hydrated || !editor || document.activeElement === editor) return;
+    editor.replaceChildren(scriptFragment(scriptText, characters));
+  }, [refNamesKey, hydrated]);
+
   // --- Bước 1: phân tích panel ---
   const errorText = (prefix: string, err: unknown) => {
     const detail = err instanceof Error ? err.message.slice(0, 140) : '';
@@ -429,7 +491,8 @@ export default function App() {
   };
 
   const handlePlan = async () => {
-    const text = (editorRef.current?.innerText ?? scriptText).trim();
+    // Viết lại @tên theo đúng tên tham chiếu ("@Chó" -> "@cho") để AI nhận ra.
+    const text = canonicalScript((editorRef.current?.innerText ?? scriptText).trim(), characters);
     if (!text) return;
 
     if (!hasApiKey()) {
@@ -545,6 +608,7 @@ export default function App() {
   const resultRefs = result ? buildRefs(characters, result.plan.refIds, result.data.descriptors) : [];
   const dupNames = duplicateRefNames(characters);
   const availableRefs = refCharacters(characters);
+  const mentions = useMemo(() => scriptMentions(scriptText, characters), [scriptText, characters]);
   const busy = isPlanning || isGenerating;
   const resultTotal = result ? totalDuration(result.plan) : 0;
 
@@ -689,7 +753,7 @@ export default function App() {
               </h2>
               <div className="flex items-center gap-1 text-[9px] font-bold text-stone-300 uppercase tracking-wider">
                 <Info size={10} />
-                <span>Gõ @ để gắn nhân vật</span>
+                <span>Gõ hoặc dán @tên</span>
               </div>
             </div>
 
@@ -698,6 +762,7 @@ export default function App() {
                 ref={editorRef}
                 contentEditable
                 onInput={handleInput}
+                onPaste={handlePaste}
                 className="w-full h-full min-h-[160px] lg:min-h-[200px] outline-none text-stone-700 leading-relaxed text-base lg:text-sm scrollbar-hide overflow-y-auto"
               />
               {!scriptText && (
@@ -736,6 +801,31 @@ export default function App() {
                 )}
               </AnimatePresence>
             </div>
+
+            {(mentions.refs.length > 0 || mentions.unknown.length > 0) && (
+              <div className="mt-4 pt-4 border-t border-stone-100 space-y-2.5">
+                {mentions.refs.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[11px] font-semibold text-stone-400">Đã gắn:</span>
+                    {mentions.refs.map((c) => (
+                      <span
+                        key={c.id}
+                        className="flex items-center gap-1.5 pl-0.5 pr-2 py-0.5 rounded-lg bg-gold-light text-gold-dark text-xs font-bold"
+                      >
+                        <img src={c.images[0]?.base64} alt="" className="w-5 h-5 rounded-md object-cover" />
+                        {c.name.trim()}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {mentions.unknown.length > 0 && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-xl px-3 py-2 leading-relaxed">
+                    Chưa có tham chiếu tên: {mentions.unknown.map((n) => `@${n}`).join(', ')}. Thêm ảnh tham chiếu và đặt
+                    đúng tên này để gắn tự động.
+                  </p>
+                )}
+              </div>
+            )}
           </section>
         </div>
 

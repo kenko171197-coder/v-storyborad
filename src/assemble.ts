@@ -151,13 +151,85 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** Ký tự thuộc một từ (gồm cả chữ có dấu tiếng Việt). */
 const WORD = '[\\p{L}\\p{M}\\p{N}_]';
 
-/** @tên trong kịch bản, không khớp khi tên chỉ là phần đầu của một từ dài hơn (@cho ≠ @chomuc). */
-const hasMention = (script: string, name: string) =>
-  new RegExp(`@${escapeRe(name)}(?!${WORD})`, 'iu').test(script);
-
 /** Tên đứng thành từ riêng: "an" không khớp với "bạn", "meo" không khớp với "meow". */
 const hasWord = (script: string, name: string) =>
   new RegExp(`(^|[^\\p{L}\\p{M}\\p{N}_])${escapeRe(name)}(?!${WORD})`, 'iu').test(script);
+
+const isWordChar = (ch: string | undefined) => !!ch && /[\p{L}\p{M}\p{N}_]/u.test(ch);
+
+/** Bỏ dấu và chữ hoa để "@Chó" khớp với tham chiếu tên "cho". Giữ nguyên độ dài chuỗi (dạng NFC). */
+const fold = (s: string) =>
+  Array.from(s, (ch) => ch.normalize('NFD').replace(/\p{M}/gu, '').replace(/đ/g, 'd').replace(/Đ/g, 'D') || ch)
+    .join('')
+    .toLowerCase();
+
+export type ScriptPart =
+  | { kind: 'text'; text: string }
+  | { kind: 'ref'; ref: Character; raw: string }
+  | { kind: 'unknown'; name: string };
+
+/**
+ * Tách kịch bản thành đoạn chữ thường và các @mention.
+ * @tên khớp với tham chiếu có ảnh (không phân biệt hoa thường, có dấu hay không dấu; tên dài được ưu tiên).
+ * @tên không khớp tham chiếu nào được trả về dạng "unknown". Không tính @ nằm giữa từ, ví dụ email.
+ */
+export function parseScript(scriptText: string, characters: Character[]): ScriptPart[] {
+  const text = scriptText.normalize('NFC');
+  const refs = refCharacters(characters)
+    .map((c) => ({ c, key: fold(c.name.normalize('NFC').trim()) }))
+    .filter((r) => r.key !== '')
+    .sort((a, b) => b.key.length - a.key.length);
+
+  const parts: ScriptPart[] = [];
+  let buf = '';
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '@' && !isWordChar(text[i - 1])) {
+      const hit = refs.find(({ key }) => {
+        const end = i + 1 + key.length;
+        return fold(text.slice(i + 1, end)) === key && !isWordChar(text[end]);
+      });
+      if (hit) {
+        if (buf) parts.push({ kind: 'text', text: buf });
+        buf = '';
+        const len = 1 + hit.key.length;
+        parts.push({ kind: 'ref', ref: hit.c, raw: text.slice(i, i + len) });
+        i += len;
+        continue;
+      }
+      const word = /^[\p{L}\p{M}\p{N}_]+/u.exec(text.slice(i + 1))?.[0];
+      if (word) {
+        if (buf) parts.push({ kind: 'text', text: buf });
+        buf = '';
+        parts.push({ kind: 'unknown', name: word });
+        i += 1 + word.length;
+        continue;
+      }
+    }
+    buf += text[i];
+    i++;
+  }
+  if (buf) parts.push({ kind: 'text', text: buf });
+  return parts;
+}
+
+/** Tham chiếu được @ trong kịch bản (theo thứ tự xuất hiện, không trùng) và các @tên không khớp. */
+export function scriptMentions(scriptText: string, characters: Character[]) {
+  const refs: Character[] = [];
+  const unknown: string[] = [];
+  parseScript(scriptText, characters).forEach((p) => {
+    if (p.kind === 'ref' && !refs.includes(p.ref)) refs.push(p.ref);
+    if (p.kind === 'unknown' && !unknown.includes(p.name)) unknown.push(p.name);
+  });
+  return { refs, unknown };
+}
+
+/** Viết lại mọi @mention theo đúng tên tham chiếu ("@Chó" -> "@cho") trước khi gửi cho AI. */
+export function canonicalScript(scriptText: string, characters: Character[]): string {
+  return parseScript(scriptText, characters)
+    .map((p) => (p.kind === 'text' ? p.text : p.kind === 'ref' ? `@${p.ref.name.trim()}` : `@${p.name}`))
+    .join('');
+}
 
 /**
  * Đoán tham chiếu dùng trong beat: tên AI trả về + tên xuất hiện trong kịch bản.
@@ -166,17 +238,15 @@ const hasWord = (script: string, name: string) =>
  */
 export function detectRefIds(characters: Character[], scriptText: string, aiNames: string[]): string[] {
   const script = scriptText.normalize('NFC');
-  const ai = aiNames.map((n) => n.normalize('NFC').trim().toLowerCase()).filter(Boolean);
-  const refs = refCharacters(characters)
-    .map((c) => ({ id: c.id, name: c.name.normalize('NFC').trim() }))
-    .filter((c) => c.name !== '');
-  const usesMentions = refs.some((c) => hasMention(script, c.name));
-  return refs
-    .filter(
-      (c) =>
-        ai.includes(c.name.toLowerCase()) ||
-        (usesMentions ? hasMention(script, c.name) : hasWord(script, c.name)),
-    )
+  const ai = aiNames.map((n) => fold(n.normalize('NFC').trim())).filter(Boolean);
+  const mentioned = new Set(scriptMentions(script, characters).refs.map((c) => c.id));
+  return refCharacters(characters)
+    .filter((c) => {
+      const name = c.name.normalize('NFC').trim();
+      if (!name) return false;
+      if (ai.includes(fold(name))) return true;
+      return mentioned.size ? mentioned.has(c.id) : hasWord(script, name);
+    })
     .map((c) => c.id);
 }
 
