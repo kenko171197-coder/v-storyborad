@@ -326,9 +326,12 @@ export function applyBible(
 
 type TokenMode = 'plain' | 'apiImage' | 'apiVideo';
 
+/** Chế độ Gán biến (Flow): tên luôn có @ phía trước để không bị hiểu nhầm thành từ tiếng Anh. */
+export const atName = (name: string) => `@${name}`;
+
 /**
  * AI viết tham chiếu dưới dạng {{tên}}. Hàm này đổi token theo định dạng:
- * plain -> cho, apiImage -> cho (Ref 1), apiVideo -> cho <IMAGE_REF_1>.
+ * plain -> @cho, apiImage -> cho (Ref 1), apiVideo -> cho <IMAGE_REF_1>.
  */
 export function renderTokens(text: string, refs: RefInfo[], mode: TokenMode): string {
   return text.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, raw: string) => {
@@ -336,7 +339,7 @@ export function renderTokens(text: string, refs: RefInfo[], mode: TokenMode): st
     if (!r) return raw.trim();
     if (mode === 'apiImage') return `${r.name} (Ref ${r.index})`;
     if (mode === 'apiVideo') return `${r.name} <IMAGE_REF_${r.index}>`;
-    return r.name;
+    return atName(r.name);
   });
 }
 
@@ -348,7 +351,7 @@ const listJoin = (items: string[]): string => items.join('; ');
 /** "cho is the mastiff dog; meo is the Siamese cat." */
 function identityLine(refs: RefInfo[], mode: TokenMode): string {
   const parts = refs.map((r) => {
-    const label = mode === 'apiVideo' ? `${r.name} <IMAGE_REF_${r.index}>` : mode === 'apiImage' ? `${r.name} (Ref ${r.index})` : r.name;
+    const label = mode === 'apiVideo' ? `${r.name} <IMAGE_REF_${r.index}>` : mode === 'apiImage' ? `${r.name} (Ref ${r.index})` : atName(r.name);
     return r.en ? `${label} is ${bare(r.en)}` : label;
   });
   return `${listJoin(parts)}.`;
@@ -393,11 +396,12 @@ export function buildGridImagePrompt(
   const mode: TokenMode = format === 'api' ? 'apiImage' : 'plain';
   const r = (t: string) => stripQuotes(renderTokens(t, refs, mode));
   const anchors = anchorRefs(refs, data);
-  const label = (a: AnchorRef) => (format === 'api' ? `${a.name} (Ref ${a.index})` : a.name);
+  const label = (a: AnchorRef) => (format === 'api' ? `${a.name} (Ref ${a.index})` : atName(a.name));
+  const short = (a: AnchorRef) => (format === 'api' ? a.name : atName(a.name));
   const out: string[] = [];
 
   if (format === 'vars' && refs.length + anchors.length) {
-    out.push([...refs, ...anchors].map((x) => `${x.name} :`).join('\n'));
+    out.push([...refs, ...anchors].map((x) => `${atName(x.name)} :`).join('\n'));
   }
 
   out.push(
@@ -414,7 +418,7 @@ export function buildGridImagePrompt(
     out.push(
       a.kind === 'location'
         ? `${label(a)} is a reference image of the set. Build the location exactly like it: same layout, furniture, materials, colours and light sources.`
-        : `${label(a)} is the storyboard of the previous beat. Keep exactly the same art style, character designs, set and lighting as ${a.name}. Panel 1 of this grid continues directly from the bottom-right panel of ${a.name}; do not copy its panels.`,
+        : `${label(a)} is the storyboard of the previous beat. Keep exactly the same art style, character designs, set and lighting as ${short(a)}. Panel 1 of this grid continues directly from the bottom-right panel of ${short(a)}; do not copy its panels.`,
     );
   });
   out.push(`Scene: ${sentence(r(data.sceneEn))}`);
@@ -454,11 +458,16 @@ export function buildVideoPrompt(
   const r = (t: string) => stripQuotes(renderTokens(t, refs, mode));
   const tl = timeline(plan);
   const hasDialogue = plan.panels.some((p) => p.dialogue.trim());
-  const board = format === 'api' ? '<IMAGE_REF_0>' : STORYBOARD_VAR;
+  const board = format === 'api' ? '<IMAGE_REF_0>' : atName(STORYBOARD_VAR);
   const out: string[] = [];
+  // Người nói trùng tên một tham chiếu thì viết như tham chiếu (@cho), còn lại giữ nguyên.
+  const speakerName = (speaker: string) => {
+    const ref = refs.find((x) => fold(x.name) === fold(speaker.replace(/^@/, '')));
+    return ref ? r(`{{${ref.name}}}`) : stripQuotes(speaker);
+  };
 
   if (format === 'vars') {
-    out.push([STORYBOARD_VAR, ...refs.map((x) => x.name)].map((n) => `${n} :`).join('\n'));
+    out.push([STORYBOARD_VAR, ...refs.map((x) => x.name)].map((n) => `${atName(n)} :`).join('\n'));
     out.push('');
   } else {
     const decl = [0, ...refs.map((x) => x.index)].map((n) => `<IMAGE_REF_${n}>@Image${n + 1}`).join(' ');
@@ -488,7 +497,7 @@ export function buildVideoPrompt(
     let line = `[${fmtSec(t.start)}-${fmtSec(t.end)}s] (panel ${i + 1}) ${sentence(r(b.camera))} ${sentence(r(b.action))}`.trim();
     if (p.dialogue.trim()) {
       // Omni: dấu hai chấm + thoại KHÔNG ngoặc kép = lời nói; có ngoặc kép = chữ hiện trên hình.
-      line += ` ${stripQuotes(p.speaker.trim()) || 'The character'} says: ${sentence(stripQuotes(p.dialogue.trim()))}`;
+      line += ` ${speakerName(p.speaker.trim()) || 'The character'} says: ${sentence(stripQuotes(p.dialogue.trim()))}`;
     }
     out.push(line);
   });
@@ -504,7 +513,7 @@ export function buildVideoPrompt(
   out.push(
     format === 'api'
       ? 'Use the images only as references for this video, not as literal first frames.'
-      : `Use ${[STORYBOARD_VAR, ...refs.map((x) => x.name)].join(', ')} only as references for this video, not as literal first frames.`,
+      : `Use ${[STORYBOARD_VAR, ...refs.map((x) => x.name)].map(atName).join(', ')} only as references for this video, not as literal first frames.`,
   );
 
   // Dòng trống sau khối khai báo biến đã được thêm ở trên, các dòng còn lại cách nhau một xuống dòng.

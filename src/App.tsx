@@ -1367,7 +1367,7 @@ export default function App() {
                       <span>
                         {promptFormat === 'vars'
                           ? gridRefs.length > 0
-                            ? `Tạo ảnh lưới: dán prompt ảnh. Ở các dòng khai báo đầu prompt, đặt con trỏ sau dấu hai chấm, gõ @ rồi chọn đúng ảnh: ${gridRefs.map((r) => `${r.name} : ${r.label}`).join('; ')}.`
+                            ? `Tạo ảnh lưới: dán prompt ảnh. Ở các dòng khai báo đầu prompt, đặt con trỏ sau dấu hai chấm, gõ @ rồi chọn đúng ảnh: ${gridRefs.map((r) => `@${r.name} : ${r.label}`).join('; ')}.`
                             : 'Tạo ảnh lưới: dán prompt ảnh vào công cụ tạo ảnh.'
                           : gridRefs.length > 0
                             ? `Tạo ảnh lưới: tải ảnh theo thứ tự ${gridRefs.map((r) => `Ref ${r.index} = ${r.label}`).join(', ')}, rồi dán prompt ảnh.`
@@ -1381,7 +1381,7 @@ export default function App() {
                       </span>
                       <span>
                         {promptFormat === 'vars'
-                          ? `Tạo video: dán prompt video. Ở dòng "storyboard :" gõ @ chọn ảnh lưới vừa tạo${resultRefs.length > 0 ? ', các dòng còn lại chọn ảnh tham chiếu như bước 1' : ''}.`
+                          ? `Tạo video: dán prompt video. Ở dòng "@storyboard :" gõ @ chọn ảnh lưới vừa tạo${resultRefs.length > 0 ? ', các dòng còn lại chọn ảnh tham chiếu như bước 1' : ''}.`
                           : `Tạo video: đính kèm ảnh lưới trước (Image1)${resultRefs.length > 0 ? `, sau đó ${resultRefs.map((r) => `${r.name} (Image${r.index + 1})`).join(', ')}` : ''}, rồi dán prompt video.`}
                       </span>
                     </li>

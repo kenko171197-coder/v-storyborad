@@ -10,7 +10,7 @@ Công cụ chia **một beat** (6–10 giây) thành lưới storyboard **2x2** 
 3. **Sửa panel plan** (nội dung, cỡ cảnh, thời lượng, thoại, thứ tự, kiểu dựng liền/cắt cảnh).
 4. Bấm **Tạo prompt**: app trả về prompt ảnh lưới 2x2 và prompt video Omni (có timecode, âm thanh, thoại đúng mốc).
 5. Chọn **cách gắn ảnh tham chiếu**:
-   - **Gán biến (Flow)** (mặc định): đầu prompt có các dòng `cho :`, `meo :`... Đặt con trỏ sau dấu hai chấm, gõ @ và chọn ảnh. Prompt video có thêm dòng `storyboard :` cho ảnh lưới.
+   - **Gán biến (Flow)** (mặc định): đầu prompt có các dòng `@cho :`, `@meo :`... Đặt con trỏ sau dấu hai chấm, gõ @ và chọn ảnh. Prompt video có thêm dòng `@storyboard :` cho ảnh lưới. Trong toàn bộ prompt, tên luôn viết kèm `@` (`@cho`) để không bị hiểu nhầm thành từ tiếng Anh.
    - **IMAGE_REF (API)**: dùng `[# References <IMAGE_REF_0>@Image1 ...]` theo tài liệu Gemini API.
 
 Tham chiếu gồm cả nhân vật và vật dụng có ảnh. Chỉ những tham chiếu có trong beat mới được khai báo; có thể bật/tắt trong panel plan. Tên tham chiếu chính là tên biến, nên đặt ngắn, không trùng nhau.
