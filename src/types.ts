@@ -71,6 +71,12 @@ export interface VideoBeat {
   noteVi: string;
 }
 
+/** Ảnh lưu trong project (data URL base64) */
+export interface StoredImage {
+  base64: string;
+  mimeType: string;
+}
+
 // --- Hồ sơ cảnh: khoá chung cho mọi beat trong cùng một cảnh ---
 export interface SceneBible {
   /** true = áp dụng cho mọi beat; false = giữ nội dung nhưng tạm không dùng */
@@ -83,6 +89,8 @@ export interface SceneBible {
   blocking: string;
   /** id tham chiếu -> cụm danh từ tiếng Anh cố định, ví dụ "the tan mastiff dog with a red collar" */
   descriptors: Record<string, string>;
+  /** Ảnh bối cảnh (không bắt buộc), dùng làm tham chiếu "location" cho mọi beat */
+  locationImage?: StoredImage | null;
 }
 
 /** Trạng thái ở cuối beat (tiếng Việt); panel 1 của beat nối tiếp phải bắt đầu đúng từ đây. */
@@ -110,6 +118,10 @@ export interface GeneratedData {
   endState?: EndState;
   /** Bối cảnh và hướng nhân vật lấy từ hồ sơ cảnh lúc tạo (dạng token {{tên}}) */
   scene?: { location: string; blocking: string };
+  /** Tiếng Anh: những thay đổi từ beat trước phải còn thấy trong beat này (vòng cổ đã mất, đĩa vỡ...) */
+  continuityEn?: string;
+  /** Ảnh mốc được gắn kèm prompt ảnh lưới: ảnh bối cảnh, ảnh lưới của beat trước */
+  anchors?: { location: boolean; prevGrid: boolean };
 }
 
 export interface BeatSequence {
@@ -121,4 +133,6 @@ export interface BeatSequence {
   generatedData: GeneratedData;
   /** id của beat mà beat này nối tiếp (nếu có) */
   prevId?: string;
+  /** Ảnh lưới 2x2 người dùng đã tạo cho beat này, làm mốc cho beat sau */
+  gridImage?: StoredImage;
 }

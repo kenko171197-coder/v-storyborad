@@ -22,6 +22,7 @@ import type {
   GeneratedData,
   PanelPlan,
   SceneBible,
+  StoredImage,
 } from './types.ts';
 
 /** Key người dùng nhập trong Cài đặt được ưu tiên, nếu không có thì dùng key trong Secrets. */
@@ -51,7 +52,7 @@ function bibleText(bible: SceneBible | null, characters: Character[], refs: { id
     .filter(([, d]) => d)
     .map(([n, d]) => `- {{${n}}} = ${d}`);
   return [
-    'LOCKED SCENE BIBLE (applies to every beat of this scene; follow it exactly, never contradict or reinvent it)',
+    'LOCKED SCENE BIBLE (applies to every beat of this scene; follow it exactly and never reinvent it. Only exception: something the END STATE of the previous beat says has changed)',
     b.style.trim() ? `Style: ${t(b.style)}` : '',
     b.location.trim() ? `Location: ${t(b.location)}` : '',
     b.blocking.trim() ? `Screen direction / blocking: ${t(b.blocking)}` : '',
@@ -203,6 +204,7 @@ const generatedSchema = {
       required: ['ambience', 'music', 'sfx'],
     },
     audioNoteVi: { type: Type.STRING },
+    continuityEn: { type: Type.STRING },
     endState: {
       type: Type.OBJECT,
       properties: {
@@ -222,6 +224,7 @@ const generatedSchema = {
     'videoBeats',
     'audio',
     'audioNoteVi',
+    'continuityEn',
     'endState',
   ],
 };
@@ -239,6 +242,22 @@ export async function generateBeatPrompts(
   const scene = bibleText(locked, characters, refs);
   const styleLocked = !!locked?.style.trim();
   const used = refCharacters(characters, plan.refIds);
+  // Ảnh mốc gửi kèm sau ảnh tham chiếu: ảnh bối cảnh, ảnh lưới của beat trước.
+  const extraImages: { img: StoredImage; note: string }[] = [];
+  if (locked?.locationImage) {
+    extraImages.push({ img: locked.locationImage, note: 'the LOCATION reference of this scene. Every environment must match it.' });
+  }
+  if (previous?.gridImage) {
+    extraImages.push({
+      img: previous.gridImage,
+      note: "the 2x2 storyboard actually generated for the PREVIOUS beat. Match its art style, character designs, set and lighting; its bottom-right panel is the state panel 1 of this beat starts from.",
+    });
+  }
+  const extraText = extraImages.length
+    ? `\nADDITIONAL IMAGES (attached after the reference images)\n${extraImages
+        .map((x, i) => `- image #${used.length + i + 1} = ${x.note}`)
+        .join('\n')}\n`
+    : '';
   const tl = timeline(plan);
 
   const refText = refs.length
@@ -277,7 +296,7 @@ Edit mode: ${plan.editMode === 'continuous' ? 'one continuous shot' : 'hard cuts
 ${scene ? `\n${scene}\n` : ''}
 REFERENCES IN THIS BEAT (characters or objects; their images are attached in this order)
 ${refText}
-
+${extraText}
 HOW TO REFER TO REFERENCES
 - Write every reference ONLY as its token, exactly as listed, e.g. {{${refs[0]?.name ?? 'name'}}}. Never write the bare name, never add tags or brackets of your own.
 - Things that are NOT in the reference list are described in plain words.
@@ -305,10 +324,15 @@ ${
   - action: what moves and happens in order (use "first ... then ..." when there are several actions), including the "between" actions from the plan. Keep it realistic for the number of seconds available. NEVER include spoken dialogue here (it is added separately).
   - noteVi: a short Vietnamese explanation of this beat.
 - audio: concrete ambience, music and sound effects that fit the beat (use "none" when silence is intended). Do not end these fields with punctuation. audioNoteVi: short Vietnamese explanation.
+- continuityEn: ${
+    previous
+      ? 'ONE English sentence listing the changes from the previous END STATE that must still be visible in this beat (e.g. "{{cho}} no longer wears its collar; a broken plate lies on the floor"). Use tokens for references. Empty string if nothing carries over.'
+      : 'return an empty string (this beat does not continue another beat).'
+  }
 - endState (VIETNAMESE, short and concrete): the exact state at the END of panel 4, so the next beat can continue from it.
   - positions: where each character/reference is (in the frame and in the location), pose, facing direction.
   - props: where each important object is and who holds it.
-  - changes: what changed during this beat and must persist (costume, damage, objects moved, lighting). Empty string if nothing.
+  - changes: every change that must persist from now on: changes carried over from the previous END STATE plus those made in this beat (costume, damage, objects moved, lighting). Empty string if nothing.
 
 RULES
 - No text, captions, signs with invented writing, numbers or logos in any panel.
@@ -325,6 +349,7 @@ ${scriptText}`;
     const img = c.images[0];
     parts.push({ inlineData: { data: img.base64.split(',')[1], mimeType: img.mimeType } });
   });
+  extraImages.forEach(({ img }) => parts.push(inlinePart(img)));
 
   const response = await client().models.generateContent({
     model: activeModel(),
@@ -332,9 +357,17 @@ ${scriptText}`;
     config: { responseMimeType: 'application/json', responseSchema: generatedSchema },
   });
 
-  const data = normalizeGenerated(JSON.parse(response.text || '{}'), refs);
-  return applyBible(data, locked, characters, refs);
+  const data = applyBible(normalizeGenerated(JSON.parse(response.text || '{}'), refs), locked, characters, refs);
+  return {
+    ...data,
+    continuityEn: previous ? data.continuityEn : '',
+    anchors: { location: !!locked?.locationImage, prevGrid: !!previous?.gridImage },
+  };
 }
+
+const inlinePart = (img: StoredImage) => ({
+  inlineData: { data: img.base64.split(',')[1], mimeType: img.mimeType },
+});
 
 // ---------------------------------------------------------------------------
 // Hồ sơ cảnh: AI viết bản nháp từ ảnh tham chiếu và kịch bản, người dùng sửa rồi khoá
@@ -360,7 +393,8 @@ const bibleSchema = {
 export async function draftSceneBible(
   characters: Character[],
   scriptText: string,
-): Promise<Omit<SceneBible, 'enabled'>> {
+  locationImage: StoredImage | null = null,
+): Promise<Omit<SceneBible, 'enabled' | 'locationImage'>> {
   const used = refCharacters(characters);
   const refs = buildRefs(characters, used.map((c) => c.id));
   const refText = refs.length
@@ -378,7 +412,7 @@ Write everything in ENGLISH. Refer to references ONLY as @name exactly as listed
 
 REFERENCES (images attached in this order)
 ${refText}
-
+${locationImage ? `- image #${used.length + 1} = a photo/illustration of the LOCATION. Describe the location from this image.\n` : ''}
 SCRIPT (may contain only the first beat of the scene)
 ${scriptText || '(empty)'}`;
 
@@ -387,6 +421,7 @@ ${scriptText || '(empty)'}`;
     const img = c.images[0];
     parts.push({ inlineData: { data: img.base64.split(',')[1], mimeType: img.mimeType } });
   });
+  if (locationImage) parts.push(inlinePart(locationImage));
 
   const response = await client().models.generateContent({
     model: activeModel(),

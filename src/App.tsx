@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { draftSceneBible, generateBeatPrompts, planBeat } from './gemini.ts';
-import { EndStateCard, SceneBibleCard } from './SceneCards.tsx';
+import { EndStateCard, GridImageCard, SceneBibleCard } from './SceneCards.tsx';
 import SettingsModal from './SettingsModal.tsx';
 import { copyText, newId } from './id.ts';
 import { clearDraft, loadDraft, saveDraft } from './storage.ts';
@@ -24,6 +24,7 @@ import {
   duplicateRefNames,
   emptyBible,
   emptyEndState,
+  gridImageRefs,
   hasBibleContent,
   parseScript,
   scriptMentions,
@@ -47,6 +48,7 @@ import type {
   PlanPanel,
   PromptFormat,
   SceneBible,
+  StoredImage,
 } from './types.ts';
 
 const PROJECT_VERSION = '2.1';
@@ -604,8 +606,8 @@ export default function App() {
     setIsDrafting(true);
     try {
       const text = canonicalScript((editorRef.current?.innerText ?? scriptText).trim(), characters);
-      const d = await draftSceneBible(characters, text);
-      setBible({ enabled: true, ...d });
+      const d = await draftSceneBible(characters, text, bible.locationImage ?? null);
+      setBible((b) => ({ ...b, enabled: true, ...d }));
     } catch (err) {
       console.error(err);
       setError(errorText('Không viết được hồ sơ cảnh. Kiểm tra API key và model trong Cài đặt.', err));
@@ -640,6 +642,14 @@ export default function App() {
     if (currentBeatId) {
       setHistory((h) => h.map((item) => (item.id === currentBeatId ? { ...item, generatedData: merge(item.generatedData) } : item)));
     }
+  };
+
+  /** Ảnh lưới người dùng đã tạo cho beat đang xem (lưu vào mục lịch sử của beat đó). */
+  const setGridImage = (img: StoredImage | null) => {
+    if (!currentBeatId) return;
+    setHistory((h) =>
+      h.map((item) => (item.id === currentBeatId ? { ...item, gridImage: img ?? undefined } : item)),
+    );
   };
 
   // --- Sửa plan ---
@@ -678,6 +688,10 @@ export default function App() {
     savePromptFormat(f);
   };
   const resultRefs = result ? buildRefs(characters, result.plan.refIds, result.data.descriptors) : [];
+  const gridRefs = result ? gridImageRefs(result.plan, result.data, characters) : [];
+  const currentBeat = result ? history.find((h) => h.id === currentBeatId) : undefined;
+  // Bản mới nhất của beat trước (ảnh lưới / trạng thái cuối có thể được thêm sau khi phân tích panel)
+  const prevBeat = contextBeat ? (history.find((h) => h.id === contextBeat.id) ?? contextBeat) : null;
   const dupNames = duplicateRefNames(characters);
   const availableRefs = refCharacters(characters);
   const mentions = useMemo(() => scriptMentions(scriptText, characters), [scriptText, characters]);
@@ -1032,16 +1046,30 @@ export default function App() {
 
               {(contextBeat || activeBible(bible)) && (
                 <div className="flex flex-col gap-2 text-[13px] text-stone-600 bg-stone-50/70 border border-stone-100 rounded-2xl px-4 py-3 leading-relaxed">
-                  {contextBeat && (
-                    <p>
-                      <span className="font-bold text-stone-800">Nối tiếp beat trước: </span>
-                      {contextBeat.plan.beatSummary || contextBeat.scriptText.slice(0, 80)}
-                      {contextBeat.generatedData.endState?.positions && (
-                        <span className="block text-stone-400">
-                          Bắt đầu từ: {contextBeat.generatedData.endState.positions}
-                        </span>
+                  {prevBeat && (
+                    <div className="flex gap-3">
+                      {prevBeat.gridImage && (
+                        <img
+                          src={prevBeat.gridImage.base64}
+                          alt=""
+                          className="w-20 h-14 rounded-lg object-cover border border-stone-200 shrink-0"
+                        />
                       )}
-                    </p>
+                      <p>
+                        <span className="font-bold text-stone-800">Nối tiếp beat trước: </span>
+                        {prevBeat.plan.beatSummary || prevBeat.scriptText.slice(0, 80)}
+                        {prevBeat.generatedData.endState?.positions && (
+                          <span className="block text-stone-400">
+                            Bắt đầu từ: {prevBeat.generatedData.endState.positions}
+                          </span>
+                        )}
+                        <span className={`block ${prevBeat.gridImage ? 'text-gold-dark' : 'text-amber-700'}`}>
+                          {prevBeat.gridImage
+                            ? 'Ảnh lưới của beat trước sẽ được gắn làm mốc (prev_storyboard).'
+                            : 'Beat trước chưa có ảnh lưới. Mở beat đó trong Lịch sử và tải ảnh lên để đồng bộ nét vẽ tốt hơn.'}
+                        </span>
+                      </p>
+                    </div>
                   )}
                   {activeBible(bible) && (
                     <p className="flex items-center gap-1.5">
@@ -1324,6 +1352,8 @@ export default function App() {
                   text={videoPrompt}
                 />
 
+                {currentBeat && <GridImageCard image={currentBeat.gridImage} onChange={setGridImage} />}
+
                 <EndStateCard endState={{ ...emptyEndState(), ...result.data.endState }} onChange={updateEndState} />
 
                 <div className="bg-white rounded-[28px] border border-stone-200/60 shadow-sm p-5 sm:p-6">
@@ -1335,12 +1365,13 @@ export default function App() {
                       </span>
                       <span>
                         {promptFormat === 'vars'
-                          ? resultRefs.length > 0
-                            ? `Tạo ảnh lưới: dán prompt ảnh. Ở các dòng khai báo đầu prompt (${resultRefs.map((r) => `${r.name} :`).join('  ')}), đặt con trỏ sau dấu hai chấm, gõ @ rồi chọn đúng ảnh tham chiếu.`
+                          ? gridRefs.length > 0
+                            ? `Tạo ảnh lưới: dán prompt ảnh. Ở các dòng khai báo đầu prompt, đặt con trỏ sau dấu hai chấm, gõ @ rồi chọn đúng ảnh: ${gridRefs.map((r) => `${r.name} : ${r.label}`).join('; ')}.`
                             : 'Tạo ảnh lưới: dán prompt ảnh vào công cụ tạo ảnh.'
-                          : resultRefs.length > 0
-                            ? `Tạo ảnh lưới: tải ảnh tham chiếu theo thứ tự ${resultRefs.map((r) => `Ref ${r.index} = ${r.name}`).join(', ')}, rồi dán prompt ảnh.`
+                          : gridRefs.length > 0
+                            ? `Tạo ảnh lưới: tải ảnh theo thứ tự ${gridRefs.map((r) => `Ref ${r.index} = ${r.label}`).join(', ')}, rồi dán prompt ảnh.`
                             : 'Tạo ảnh lưới: dán prompt ảnh vào công cụ tạo ảnh.'}
+                        {currentBeat && ' Tạo xong, tải ảnh lưới lên ô "Ảnh lưới đã tạo" bên trên để beat sau dùng làm mốc.'}
                       </span>
                     </li>
                     <li className="flex gap-3">
@@ -1509,9 +1540,18 @@ export default function App() {
                         </button>
                       </div>
 
-                      <p className="text-sm text-stone-600 font-medium leading-relaxed line-clamp-3 mb-4 italic">
-                        “{item.scriptText}”
-                      </p>
+                      <div className="flex gap-3 mb-4">
+                        {item.gridImage && (
+                          <img
+                            src={item.gridImage.base64}
+                            alt=""
+                            className="w-24 h-16 rounded-xl object-cover border border-stone-100 shrink-0"
+                          />
+                        )}
+                        <p className="text-sm text-stone-600 font-medium leading-relaxed line-clamp-3 italic">
+                          “{item.scriptText}”
+                        </p>
+                      </div>
 
                       <div className="flex flex-wrap items-center gap-2 mb-3">
                         <CopyButton

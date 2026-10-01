@@ -106,6 +106,9 @@ export function planBlockReason(plan: PanelPlan): string | null {
 
 // --- Tham chiếu (nhân vật và vật dụng) ---
 export const STORYBOARD_VAR = 'storyboard';
+/** Tên biến của ảnh bối cảnh và ảnh lưới beat trước trong prompt ảnh lưới */
+export const LOCATION_VAR = 'location';
+export const PREV_GRID_VAR = 'prev_storyboard';
 
 export interface RefInfo {
   id: string;
@@ -128,7 +131,7 @@ export function buildRefs(
   refIds: string[],
   descriptors: Record<string, string> = {},
 ): RefInfo[] {
-  const used = new Set<string>([STORYBOARD_VAR]);
+  const used = new Set<string>([STORYBOARD_VAR, LOCATION_VAR, PREV_GRID_VAR]);
   return refCharacters(characters, refIds).map((c, i) => {
     // Tên biến phải khác nhau, nếu trùng thì thêm hậu tố _2, _3...
     const base = c.name.trim() || `ref${i + 1}`;
@@ -262,7 +265,7 @@ export const emptyBible = (): SceneBible => ({
 });
 
 export const hasBibleContent = (b: SceneBible): boolean =>
-  !!(b.style.trim() || b.location.trim() || b.blocking.trim()) ||
+  !!(b.style.trim() || b.location.trim() || b.blocking.trim() || b.locationImage) ||
   Object.values(b.descriptors).some((d) => !!d.trim());
 
 /** Hồ sơ cảnh đang được áp dụng (bật và có nội dung), hoặc null. */
@@ -273,7 +276,8 @@ export function activeBible(b: SceneBible | null | undefined): SceneBible | null
 /** Dấu vân tay của hồ sơ cảnh, để biết prompt đã tạo có còn khớp không. */
 export const bibleKey = (b: SceneBible | null | undefined): string => {
   const a = activeBible(b);
-  return a ? JSON.stringify([a.style, a.location, a.blocking, a.descriptors]) : '';
+  const img = a?.locationImage ? `${a.locationImage.base64.length}:${a.locationImage.base64.slice(-24)}` : '';
+  return a ? JSON.stringify([a.style, a.location, a.blocking, a.descriptors, img]) : '';
 };
 
 /** "@cho" trong hồ sơ cảnh -> "{{cho}}" để được đổi theo định dạng prompt giống chữ do AI viết. */
@@ -344,6 +348,33 @@ function identityLine(refs: RefInfo[], mode: TokenMode): string {
   return `${listJoin(parts)}.`;
 }
 
+/** Ảnh mốc thêm vào prompt ảnh lưới, đánh số tiếp sau các tham chiếu nhân vật/vật dụng. */
+export interface AnchorRef {
+  kind: 'location' | 'prevGrid';
+  name: string;
+  index: number;
+}
+
+export function anchorRefs(refs: RefInfo[], data: GeneratedData): AnchorRef[] {
+  const out: AnchorRef[] = [];
+  if (data.anchors?.location) out.push({ kind: 'location', name: LOCATION_VAR, index: refs.length + out.length + 1 });
+  if (data.anchors?.prevGrid) out.push({ kind: 'prevGrid', name: PREV_GRID_VAR, index: refs.length + out.length + 1 });
+  return out;
+}
+
+/** Mọi ảnh cần gắn khi tạo ảnh lưới, theo đúng thứ tự Ref 1, 2, 3... (dùng cho phần hướng dẫn). */
+export function gridImageRefs(plan: PanelPlan, data: GeneratedData, characters: Character[]) {
+  const refs = buildRefs(characters, plan.refIds, data.descriptors);
+  return [
+    ...refs.map((r) => ({ name: r.name, index: r.index, label: r.name })),
+    ...anchorRefs(refs, data).map((a) => ({
+      name: a.name,
+      index: a.index,
+      label: a.kind === 'location' ? 'ảnh bối cảnh' : 'ảnh lưới của beat trước',
+    })),
+  ];
+}
+
 // --- Ghép prompt cuối ---
 export function buildGridImagePrompt(
   plan: PanelPlan,
@@ -355,10 +386,12 @@ export function buildGridImagePrompt(
   const refs = buildRefs(characters, plan.refIds, data.descriptors);
   const mode: TokenMode = format === 'api' ? 'apiImage' : 'plain';
   const r = (t: string) => renderTokens(t, refs, mode);
+  const anchors = anchorRefs(refs, data);
+  const label = (a: AnchorRef) => (format === 'api' ? `${a.name} (Ref ${a.index})` : a.name);
   const out: string[] = [];
 
-  if (format === 'vars' && refs.length) {
-    out.push(refs.map((x) => `${x.name} :`).join('\n'));
+  if (format === 'vars' && refs.length + anchors.length) {
+    out.push([...refs, ...anchors].map((x) => `${x.name} :`).join('\n'));
   }
 
   out.push(
@@ -371,7 +404,17 @@ export function buildGridImagePrompt(
         : `References: ${identityLine(refs, 'plain')} Match each one exactly to its reference image.`,
     );
   }
+  anchors.forEach((a) => {
+    out.push(
+      a.kind === 'location'
+        ? `${label(a)} is a reference image of the set. Build the location exactly like it: same layout, furniture, materials, colours and light sources.`
+        : `${label(a)} is the storyboard of the previous beat. Keep exactly the same art style, character designs, set and lighting as ${a.name}. Panel 1 of this grid continues directly from the bottom-right panel of ${a.name}; do not copy its panels.`,
+    );
+  });
   out.push(`Scene: ${sentence(r(data.sceneEn))}`);
+  if (data.continuityEn) {
+    out.push(`Continuity from the previous beat (must stay visible in every panel): ${sentence(r(data.continuityEn))}`);
+  }
   if (data.scene?.location) {
     out.push(`Location (identical in all four panels and in every shot of this scene): ${sentence(r(data.scene.location))}`);
   }
@@ -430,6 +473,7 @@ export function buildVideoPrompt(
     out.push(`Screen direction (do not cross the line; keep everyone on the same side of the frame): ${sentence(r(data.scene.blocking))}`);
   }
   out.push(`Style and consistency: ${sentence(r(data.styleBlock))}`);
+  if (data.continuityEn) out.push(`Continuity from the previous beat: ${sentence(r(data.continuityEn))}`);
 
   data.videoBeats.forEach((b, i) => {
     const t = tl[i];
@@ -474,7 +518,7 @@ export function describePreviousBeat(seq: BeatSequence): string {
     vid ? `Final video beat: ${vid.action}` : '',
     end && hasEndState(end)
       ? [
-          'END STATE of the previous beat (authoritative; panel 1 of this beat must start exactly from it):',
+          'END STATE of the previous beat (authoritative; panel 1 of this beat must start exactly from it; where it differs from the scene bible, the END STATE wins):',
           end.positions ? `- Positions, poses, facing: ${end.positions}` : '',
           end.props ? `- Props: ${end.props}` : '',
           end.changes ? `- Changes that persist: ${end.changes}` : '',
@@ -565,6 +609,7 @@ export function normalizeGenerated(raw: any, refs: RefInfo[]): GeneratedData {
       sfx: str(raw?.audio?.sfx),
     },
     audioNoteVi: str(raw?.audioNoteVi),
+    continuityEn: str(raw?.continuityEn),
     endState: {
       positions: str(raw?.endState?.positions),
       props: str(raw?.endState?.props),

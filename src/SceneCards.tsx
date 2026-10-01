@@ -1,7 +1,8 @@
-import { useState } from 'react';
-import { ChevronDown, Loader2, Lock, Sparkles, Trash2, Flag, CopyCheck } from 'lucide-react';
+import { useState, type ChangeEvent } from 'react';
+import { ChevronDown, Loader2, Lock, Sparkles, Trash2, Flag, CopyCheck, ImagePlus, LayoutGrid } from 'lucide-react';
 import { activeBible, hasBibleContent } from './assemble.ts';
-import type { Character, EndState, SceneBible } from './types.ts';
+import { readImageFile } from './image.ts';
+import type { Character, EndState, SceneBible, StoredImage } from './types.ts';
 
 const fieldLabel = 'block text-[11px] font-semibold text-stone-400 mb-1';
 const fieldBase =
@@ -9,6 +10,56 @@ const fieldBase =
 const smallButton =
   'flex-1 py-2.5 px-3 rounded-xl border border-stone-200 text-xs font-bold text-stone-600 hover:bg-gold-light hover:text-gold-dark hover:border-gold-light disabled:text-stone-300 disabled:hover:bg-transparent disabled:hover:border-stone-200 transition-colors flex items-center justify-center gap-1.5';
 
+/** Ô ảnh: chưa có thì hiện nút tải lên, có rồi thì hiện ảnh kèm nút đổi và xoá. */
+function ImageSlot({
+  image,
+  emptyLabel,
+  onChange,
+}: {
+  image: StoredImage | null | undefined;
+  emptyLabel: string;
+  onChange: (img: StoredImage | null) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const pick = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setLoading(true);
+    try {
+      onChange(await readImageFile(file));
+    } finally {
+      setLoading(false);
+    }
+  };
+  const input = <input type="file" hidden accept="image/*" onChange={pick} />;
+
+  if (!image) {
+    return (
+      <label className="flex items-center justify-center gap-2 w-full py-4 rounded-xl border-2 border-dashed border-stone-200 text-xs font-bold text-stone-400 hover:bg-gold-light hover:border-gold-light hover:text-gold-dark cursor-pointer transition-colors">
+        {loading ? <Loader2 size={14} className="animate-spin" /> : <ImagePlus size={14} />}
+        {emptyLabel}
+        {input}
+      </label>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <img src={image.base64} alt="" className="w-full max-h-72 object-contain rounded-xl border border-stone-100 bg-stone-50" />
+      <div className="flex gap-3 text-xs font-bold">
+        <label className="text-stone-500 hover:text-gold-dark cursor-pointer flex items-center gap-1">
+          {loading ? <Loader2 size={12} className="animate-spin" /> : <ImagePlus size={12} />}
+          Đổi ảnh
+          {input}
+        </label>
+        <button onClick={() => onChange(null)} className="text-stone-400 hover:text-red-500 flex items-center gap-1">
+          <Trash2 size={12} />
+          Xoá ảnh
+        </button>
+      </div>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Hồ sơ cảnh
@@ -94,6 +145,14 @@ export function SceneBibleCard({
               placeholder="3D animated film look, soft global illumination, warm afternoon light..."
               value={bible.style}
               onChange={(e) => onChange({ style: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className={fieldLabel}>Ảnh bối cảnh (không bắt buộc, gắn vào prompt ảnh lưới của mọi beat)</label>
+            <ImageSlot
+              image={bible.locationImage}
+              emptyLabel="Tải ảnh bối cảnh"
+              onChange={(img) => onChange({ locationImage: img })}
             />
           </div>
           <div>
@@ -188,6 +247,33 @@ export function EndStateCard({
           />
         </div>
       ))}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Ảnh lưới đã tạo cho beat
+// ---------------------------------------------------------------------------
+export function GridImageCard({
+  image,
+  onChange,
+}: {
+  image: StoredImage | undefined;
+  onChange: (img: StoredImage | null) => void;
+}) {
+  return (
+    <div className="bg-white rounded-[28px] border border-stone-200/60 shadow-sm p-5 sm:p-6 space-y-3">
+      <div className="flex items-start gap-2.5">
+        <LayoutGrid size={16} className="text-stone-400 mt-0.5 shrink-0" />
+        <div>
+          <h3 className="text-sm font-black text-black leading-tight">Ảnh lưới đã tạo</h3>
+          <p className="text-xs text-stone-400 mt-0.5 leading-relaxed">
+            Tải lên ảnh lưới 2x2 bạn đã tạo từ prompt trên. Beat sau (khi bật Nối tiếp beat trước) gắn ảnh này làm mốc
+            để giữ cùng nét vẽ, nhân vật và bối cảnh.
+          </p>
+        </div>
+      </div>
+      <ImageSlot image={image} emptyLabel="Tải ảnh lưới của beat này" onChange={onChange} />
     </div>
   );
 }

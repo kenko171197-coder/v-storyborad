@@ -23,14 +23,17 @@ Tổng thời lượng 4 panel không được vượt 10 giây (giới hạn c�
   - **AI viết nháp**: AI đọc ảnh tham chiếu và kịch bản rồi viết bản nháp; bạn sửa lại.
   - **Lấy từ beat đang xem**: lấy phong cách và mô tả tham chiếu của beat bạn ưng ý.
   - Khi bật **Khoá cho mọi beat**, mọi beat dùng nguyên văn hồ sơ này (AI không viết lại phong cách và mô tả tham chiếu); prompt ảnh và video có thêm dòng *Location* và *Screen direction*. Sửa hồ sơ sau khi tạo prompt sẽ hiện cảnh báo prompt đã cũ.
-- **Trạng thái cuối beat** (dưới prompt video): vị trí và tư thế, đồ vật, thay đổi cần giữ ở cuối panel 4. AI ghi sẵn, bạn sửa được. Khi bật **Nối tiếp beat trước**, panel 1 của beat sau bắt buộc bắt đầu từ trạng thái này.
+- **Ảnh bối cảnh** (trong Hồ sơ cảnh, không bắt buộc): khi hồ sơ đang khoá, prompt ảnh lưới của mọi beat có thêm tham chiếu `location`.
+- **Ảnh lưới đã tạo** (dưới prompt video): tải lên ảnh lưới 2x2 bạn đã tạo cho beat. Beat sau (khi bật *Nối tiếp beat trước*) gắn ảnh này làm tham chiếu `prev_storyboard` để giữ cùng nét vẽ, nhân vật và bối cảnh; AI ở bước 2 cũng được xem ảnh này. Ảnh lớn được thu nhỏ còn cạnh dài 1536px.
+- **Trạng thái cuối beat** (dưới prompt video): vị trí và tư thế, đồ vật, thay đổi cần giữ ở cuối panel 4. AI ghi sẵn, bạn sửa được. Khi bật **Nối tiếp beat trước**, panel 1 của beat sau bắt buộc bắt đầu từ trạng thái này. Nếu trạng thái cuối khác với hồ sơ cảnh (vd. vòng cổ đã mất), trạng thái cuối được ưu tiên, và prompt có thêm dòng *Continuity* để công cụ vẽ cũng biết.
 
 ## Cấu trúc mã
 
 - `src/assemble.ts` — logic thuần: thời lượng, cảnh báo, chuẩn hóa dữ liệu AI, ghép prompt cuối. Timecode và thoại được ghép bằng code, không phụ thuộc AI.
 - `src/gemini.ts` — hai lời gọi Gemini (đề xuất plan; viết nội dung chi tiết từ plan đã sửa), dùng `responseSchema`.
 - `src/App.tsx` — giao diện.
-- `src/SceneCards.tsx` — thẻ Hồ sơ cảnh và Trạng thái cuối beat.
+- `src/SceneCards.tsx` — thẻ Hồ sơ cảnh, Ảnh lưới đã tạo và Trạng thái cuối beat.
+- `src/image.ts` — đọc và thu nhỏ ảnh tải lên.
 - `src/SettingsModal.tsx`, `src/settings.ts` — hộp Cài đặt và lưu key/model.
 - `src/types.ts` — kiểu dữ liệu.
 
