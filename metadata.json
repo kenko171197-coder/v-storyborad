@@ -1,0 +1,5 @@
+{
+  "name": "V Storyboard 1",
+  "description": "A cinematic storyboard artist tool powered by Gemini AI. Create 3x3 grid storyboards and video prompts from your scripts.",
+  "requestFramePermissions": []
+}
