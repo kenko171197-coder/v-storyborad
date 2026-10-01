@@ -120,7 +120,7 @@ METHOD
    - If there are more than 4 changes: keep the 4 most important (opening, turning point, peak, ending). Put the smaller actions in the "between" field of the panel they happen after. Never drop story content silently.
    - If there are fewer than 4: use the pattern setup -> action -> peak -> consequence (before the action, during, the peak moment, the aftermath/reaction/pause), each with a different framing.
 3. Each panel freezes ONE main action at its clearest moment. It is a still keyframe, not a sequence.
-4. Adjacent panels must use different shot sizes so the four beats have rhythm, yet remain continuous: same characters, objects, costumes, location and lighting.
+4. Give adjacent panels different framing so the four beats have rhythm, yet keep them continuous: same characters, objects, costumes, location and lighting. If the beat is one continuous shot (editMode "continuous"), every framing change must be reachable by moving the camera (push in, pull back, pan, follow) within the panel's seconds, so keep the changes moderate; big jumps such as wide shot to extreme close-up need editMode "cuts".
 
 FIELDS
 - role: setup | action | peak | consequence.
@@ -205,6 +205,7 @@ const generatedSchema = {
     },
     audioNoteVi: { type: Type.STRING },
     continuityEn: { type: Type.STRING },
+    videoLookEn: { type: Type.STRING },
     endState: {
       type: Type.OBJECT,
       properties: {
@@ -225,6 +226,7 @@ const generatedSchema = {
     'audio',
     'audioNoteVi',
     'continuityEn',
+    'videoLookEn',
     'endState',
   ],
 };
@@ -314,16 +316,19 @@ ${
       : '- styleBlock: ONE compact English paragraph reused in both the image and the video prompt. Cover: overall visual style (derive it from the reference images and the script), colour palette, lighting, the key visual details of each reference (use tokens), environment layout, lens language. It must lock consistency across all four panels.'
   }
 - imagePanels (exactly 4, same order as the plan). These are STILL keyframes:
-  - framing: the planned shot size plus camera angle and camera placement (e.g. "Medium shot, eye-level, three-quarter view").
+  - framing: the planned shot size plus camera angle and camera placement (e.g. "Medium shot, eye-level, three-quarter view"). This is a still frame: no camera movement words such as static, pan or dolly.
   - content: ONE or TWO sentences: who/what is in frame, position, pose, expression and the single frozen action. Say each thing once; do not restate the same action in other words.
   - environment: physical, concrete description of the place and background visible in this framing (materials, textures, light sources). ${locked?.location.trim() ? 'It MUST match the locked location of the scene bible; only describe the part visible from this angle. ' : ''}Avoid vague adjectives such as "beautiful" or "dramatic".
   - lens: focal length feel and depth of field.
   - detailsVi: Vietnamese description of mood, context and action of the panel.
 - videoBeats (exactly 4, same order as the plan). Each describes only what happens inside that panel's time window:
-  - camera: camera movement with speed (e.g. "Slow dolly-in", "Static", "Handheld follow"). When edit mode is one continuous shot, make the camera movement flow from one beat into the next.
+  - camera: camera movement with speed (e.g. "Slow dolly-in", "Static", "Handheld follow"). When edit mode is one continuous shot, reach each panel's planned framing by moving the camera from the previous panel (e.g. "Slow push-in to a close-up"), so the movement flows from one beat into the next.
   - action: what moves and happens in order (use "first ... then ..." when there are several actions), including the "between" actions from the plan. Keep it realistic for the number of seconds available. NEVER include spoken dialogue here (it is added separately).
   - noteVi: a short Vietnamese explanation of this beat.
 - audio: concrete ambience, music and sound effects that fit the beat (use "none" when silence is intended). Do not end these fields with punctuation. audioNoteVi: short Vietnamese explanation.
+- videoLookEn: ONE short English sentence (at most 20 words) for the video prompt: rendering style, lighting and place, e.g. "Stylised 3D animated film, warm afternoon light in a small kitchen".${
+    locked ? ' It must be a faithful summary of the locked scene bible.' : ''
+  } The storyboard image carries the details, so keep it short.
 - continuityEn: ${
     previous
       ? 'ONE English sentence listing the changes from the previous END STATE that must still be visible in this beat (e.g. "{{cho}} no longer wears its collar; a broken plate lies on the floor"). Use tokens for references. Empty string if nothing carries over.'

@@ -120,6 +120,8 @@ export interface GeneratedData {
   scene?: { location: string; blocking: string };
   /** Tiếng Anh: những thay đổi từ beat trước phải còn thấy trong beat này (vòng cổ đã mất, đĩa vỡ...) */
   continuityEn?: string;
+  /** Tiếng Anh, một câu ngắn: phong cách, ánh sáng, bối cảnh cho prompt video */
+  videoLookEn?: string;
   /** Ảnh mốc được gắn kèm prompt ảnh lưới: ảnh bối cảnh, ảnh lưới của beat trước */
   anchors?: { location: boolean; prevGrid: boolean };
 }

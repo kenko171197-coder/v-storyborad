@@ -36,12 +36,21 @@ const sentence = (t: string): string => {
   return x && !/[.!?…"”]$/.test(x) ? `${x}.` : x;
 };
 
+/** Viết hoa chữ cái đầu câu ("first @cho leaps" -> "First @cho leaps"). */
+const capFirst = (t: string): string => t.replace(/^\p{Ll}/u, (c) => c.toUpperCase());
+/** Viết thường chữ đầu khi ghép vào giữa câu ("Wide shot" -> "wide shot"), giữ nguyên chữ viết tắt. */
+const lcFirst = (t: string): string => t.replace(/^([A-Z])(?=[a-z])/, (c) => c.toLowerCase());
+
 // --- Thời lượng ---
 export function totalDuration(plan: PanelPlan): number {
   return round1(
     plan.panels.reduce((sum, p) => sum + (Number.isFinite(p.durationSec) ? p.durationSec : 0), 0),
   );
 }
+
+/** Độ dài clip cần chọn trong Flow (4, 6, 8 hoặc 10 giây) cho tổng thời lượng của plan. */
+export const clipSeconds = (total: number): number =>
+  [4, 6, 8, 10].find((x) => x >= total - 0.05) ?? MAX_TOTAL_SEC;
 
 export function timeline(plan: PanelPlan): { start: number; end: number }[] {
   let t = 0;
@@ -364,19 +373,30 @@ export interface AnchorRef {
   index: number;
 }
 
-export function anchorRefs(refs: RefInfo[], data: GeneratedData): AnchorRef[] {
+/** Bật/tắt từng ảnh mốc trong prompt ảnh lưới (mặc định bật nếu beat có ảnh đó). */
+export interface AnchorOptions {
+  useLocation?: boolean;
+  usePrevGrid?: boolean;
+}
+
+export function anchorRefs(refs: RefInfo[], data: GeneratedData, opts: AnchorOptions = {}): AnchorRef[] {
   const out: AnchorRef[] = [];
-  if (data.anchors?.location) out.push({ kind: 'location', name: LOCATION_VAR, index: refs.length + out.length + 1 });
-  if (data.anchors?.prevGrid) out.push({ kind: 'prevGrid', name: PREV_GRID_VAR, index: refs.length + out.length + 1 });
+  if (data.anchors?.location && opts.useLocation !== false) out.push({ kind: 'location', name: LOCATION_VAR, index: refs.length + out.length + 1 });
+  if (data.anchors?.prevGrid && opts.usePrevGrid !== false) out.push({ kind: 'prevGrid', name: PREV_GRID_VAR, index: refs.length + out.length + 1 });
   return out;
 }
 
 /** Mọi ảnh cần gắn khi tạo ảnh lưới, theo đúng thứ tự Ref 1, 2, 3... (dùng cho phần hướng dẫn). */
-export function gridImageRefs(plan: PanelPlan, data: GeneratedData, characters: Character[]) {
+export function gridImageRefs(
+  plan: PanelPlan,
+  data: GeneratedData,
+  characters: Character[],
+  opts: AnchorOptions = {},
+) {
   const refs = buildRefs(characters, plan.refIds, data.descriptors);
   return [
     ...refs.map((r) => ({ name: r.name, index: r.index, label: r.name })),
-    ...anchorRefs(refs, data).map((a) => ({
+    ...anchorRefs(refs, data, opts).map((a) => ({
       name: a.name,
       index: a.index,
       label: a.kind === 'location' ? 'ảnh bối cảnh' : 'ảnh lưới của beat trước',
@@ -385,65 +405,74 @@ export function gridImageRefs(plan: PanelPlan, data: GeneratedData, characters: 
 }
 
 // --- Ghép prompt cuối ---
+// Bố cục theo hướng dẫn prompt của Nano Banana và Gemini Omni (đã thử thực tế trên Flow):
+// phong cách nêu trước, bối cảnh chỉ nói một lần, thay đổi so với ảnh tham chiếu đặt ngay sau phần nhân vật,
+// câu "không có chữ" viết dạng mô tả điều mong muốn thay vì liệt kê điều cấm.
 export function buildGridImagePrompt(
   plan: PanelPlan,
   data: GeneratedData,
   characters: Character[],
   aspect: AspectRatio,
   format: PromptFormat,
+  opts: AnchorOptions = {},
 ): string {
   const refs = buildRefs(characters, plan.refIds, data.descriptors);
   const mode: TokenMode = format === 'api' ? 'apiImage' : 'plain';
   const r = (t: string) => stripQuotes(renderTokens(t, refs, mode));
-  const anchors = anchorRefs(refs, data);
+  const anchors = anchorRefs(refs, data, opts);
   const label = (a: AnchorRef) => (format === 'api' ? `${a.name} (Ref ${a.index})` : atName(a.name));
-  const short = (a: AnchorRef) => (format === 'api' ? a.name : atName(a.name));
+  const loc = anchors.find((a) => a.kind === 'location');
+  const prev = anchors.find((a) => a.kind === 'prevGrid');
+  const locationText = data.scene?.location ? bare(r(data.scene.location)) : '';
+  // Bối cảnh đã cố định (ảnh hoặc hồ sơ cảnh) thì không tả lại bối cảnh riêng cho từng panel, tránh lệch nhau.
+  const setLocked = !!loc || !!locationText;
   const out: string[] = [];
 
   if (format === 'vars' && refs.length + anchors.length) {
     out.push([...refs, ...anchors].map((x) => `${atName(x.name)} :`).join('\n'));
   }
 
+  const style = bare(r(data.styleBlock));
   out.push(
-    `Create ONE image: a 2x2 storyboard grid of four equal ${aspect} panels, ordered left to right, top to bottom, separated by thin white gutters. The four panels are consecutive keyframes of one continuous scene. Do not add any text, numbers, captions, logos or watermarks anywhere in the image.`,
+    `A 2x2 storyboard sheet: four equal ${aspect} panels read left to right, top to bottom, with thin white gutters. The four panels are consecutive keyframes of one continuous scene.${
+      style ? ` ${sentence(style)} Keep this look identical in all four panels.` : ''
+    }`,
   );
-  if (refs.length) {
+
+  const cast = refs.length
+    ? format === 'api'
+      ? `Cast (attached in this order), matching each reference image exactly: ${identityLine(refs, 'apiImage')}`
+      : `Cast, matching each reference image exactly: ${identityLine(refs, 'plain')}`
+    : '';
+  const changed = data.continuityEn ? `Changed since the references: ${sentence(r(data.continuityEn))}` : '';
+  if (cast || changed) out.push([cast, changed].filter(Boolean).join('\n'));
+
+  const set = loc
+    ? locationText
+      ? `Set: build it exactly like ${label(loc)}, ${lcFirst(locationText)}.`
+      : `Set: build it exactly like ${label(loc)}, with the same layout, furniture, materials, colours and light sources.`
+    : locationText
+      ? `Set: ${sentence(locationText)}`
+      : `Scene: ${sentence(r(data.sceneEn))}`;
+  out.push([set, data.scene?.blocking ? sentence(r(data.scene.blocking)) : ''].filter(Boolean).join(' '));
+
+  if (prev) {
     out.push(
-      format === 'api'
-        ? `References (attached in this order): ${identityLine(refs, 'apiImage')} Match each one exactly to its reference image.`
-        : `References: ${identityLine(refs, 'plain')} Match each one exactly to its reference image.`,
+      `${label(prev)} is the previous beat: same art style, characters, set and lighting. Panel 1 continues from its bottom-right panel; compose new panels rather than copying it.`,
     );
   }
-  anchors.forEach((a) => {
-    out.push(
-      a.kind === 'location'
-        ? `${label(a)} is a reference image of the set. Build the location exactly like it: same layout, furniture, materials, colours and light sources.`
-        : `${label(a)} is the storyboard of the previous beat. Keep exactly the same art style, character designs, set and lighting as ${short(a)}. Panel 1 of this grid continues directly from the bottom-right panel of ${short(a)}; do not copy its panels.`,
-    );
-  });
-  out.push(`Scene: ${sentence(r(data.sceneEn))}`);
-  if (data.continuityEn) {
-    out.push(`Continuity from the previous beat (must stay visible in every panel): ${sentence(r(data.continuityEn))}`);
-  }
-  if (data.scene?.location) {
-    out.push(`Location (identical in all four panels and in every shot of this scene): ${sentence(r(data.scene.location))}`);
-  }
-  if (data.scene?.blocking) {
-    out.push(`Screen direction (keep everyone on the same side of the frame): ${sentence(r(data.scene.blocking))}`);
-  }
-  out.push(`Shared style and consistency (identical in all four panels): ${sentence(r(data.styleBlock))}`);
 
-  data.imagePanels.forEach((p, i) => {
-    const body = [sentence(r(p.framing)), sentence(r(p.content))].filter(Boolean).join(' ');
-    const extra = [
-      p.environment ? `Setting: ${sentence(r(p.environment))}` : '',
-      p.lens ? `Lens: ${sentence(r(p.lens))}` : '',
-    ]
-      .filter(Boolean)
-      .join(' ');
-    out.push(`Panel ${i + 1} (${GRID_POSITIONS[i]}): ${body} ${extra}`.trim());
-  });
+  out.push(
+    data.imagePanels
+      .map((p, i) => {
+        const shot = [bare(r(p.framing)), bare(r(p.lens))].filter(Boolean).join(', ');
+        const setting = !setLocked && p.environment ? ` Setting: ${sentence(r(p.environment))}` : '';
+        return `Panel ${i + 1} (${GRID_POSITIONS[i]})${shot ? `, ${lcFirst(shot)}` : ''}: ${capFirst(sentence(r(p.content)))}${setting}`;
+      })
+      .join('\n'),
+  );
 
+  out.push('Clean frames: every surface is plain, with no lettering, numbers, captions or logos anywhere.');
   return out.join('\n\n');
 }
 
@@ -456,8 +485,10 @@ export function buildVideoPrompt(
   const refs = buildRefs(characters, plan.refIds, data.descriptors);
   const mode: TokenMode = format === 'api' ? 'apiVideo' : 'plain';
   const r = (t: string) => stripQuotes(renderTokens(t, refs, mode));
-  const tl = timeline(plan);
-  const hasDialogue = plan.panels.some((p) => p.dialogue.trim());
+  const clip = clipSeconds(totalDuration(plan));
+  // Panel cuối kéo dài tới hết clip (vd. plan 9.5s, clip Flow 10s), để không có khoảng trống không được mô tả.
+  const tl = timeline(plan).map((t, i, all) => (i === all.length - 1 && clip > t.end ? { ...t, end: clip } : t));
+  const lines = plan.panels.filter((p) => p.dialogue.trim()).length;
   const board = format === 'api' ? '<IMAGE_REF_0>' : atName(STORYBOARD_VAR);
   const out: string[] = [];
   // Người nói trùng tên một tham chiếu thì viết như tham chiếu (@cho), còn lại giữ nguyên.
@@ -468,56 +499,61 @@ export function buildVideoPrompt(
 
   if (format === 'vars') {
     out.push([STORYBOARD_VAR, ...refs.map((x) => x.name)].map((n) => `${atName(n)} :`).join('\n'));
-    out.push('');
   } else {
     const decl = [0, ...refs.map((x) => x.index)].map((n) => `<IMAGE_REF_${n}>@Image${n + 1}`).join(' ');
     out.push(`[# References ${decl}]`);
   }
+  out.push('');
 
   out.push(
-    `${board} is a 2x2 storyboard. Use it only as a guide for composition, action and camera. Its four panels (top-left, top-right, bottom-left, bottom-right) are the four beats in order: panel 1 is how the video begins and panel 4 is how it ends. Never show the grid, panel borders or gutters.`,
+    `Follow ${board} exactly, in order starting top left: panel 1 is the opening, panel 4 is the ending. Use it only as a guide for composition, action and camera; never show the grid or its borders. The whole story takes ${fmtSec(clip)} seconds ${
+      plan.editMode === 'continuous'
+        ? 'in one single continuous shot with no cuts.'
+        : 'with a hard cut between panels, one clean shot per panel.'
+    }`,
   );
-  if (refs.length) out.push(identityLine(refs, mode));
-  out.push(
-    plan.editMode === 'continuous'
-      ? 'Format: One single continuous shot, no scene cuts, no jump cuts.'
-      : 'Format: Hard cuts between the four beats, one clean shot per beat.',
-  );
-  if (data.scene?.location) out.push(`Location: ${sentence(r(data.scene.location))}`);
-  if (data.scene?.blocking) {
-    out.push(`Screen direction (do not cross the line; keep everyone on the same side of the frame): ${sentence(r(data.scene.blocking))}`);
-  }
-  out.push(`Style and consistency: ${sentence(r(data.styleBlock))}`);
-  if (data.continuityEn) out.push(`Continuity from the previous beat: ${sentence(r(data.continuityEn))}`);
+  const cast = refs.length ? `Cast: ${identityLine(refs, mode)}` : '';
+  const changed = data.continuityEn ? `Changed since the references: ${sentence(r(data.continuityEn))}` : '';
+  if (cast || changed) out.push([cast, changed].filter(Boolean).join(' '));
+  // Một câu ngắn về phong cách, ánh sáng, bối cảnh: chi tiết đã có trong ảnh lưới, Omni chỉ cần định hướng.
+  const look = data.videoLookEn
+    ? sentence(r(data.videoLookEn))
+    : [sentence(r(data.styleBlock)), data.scene?.location ? sentence(r(data.scene.location)) : ''].filter(Boolean).join(' ');
+  const blocking = data.scene?.blocking ? sentence(r(data.scene.blocking)) : '';
+  if (look || blocking) out.push([look, blocking].filter(Boolean).join(' '));
+  out.push('');
 
   data.videoBeats.forEach((b, i) => {
     const t = tl[i];
     const p = plan.panels[i];
     if (!t || !p) return;
-    let line = `[${fmtSec(t.start)}-${fmtSec(t.end)}s] (panel ${i + 1}) ${sentence(r(b.camera))} ${sentence(r(b.action))}`.trim();
+    let line = `[${fmtSec(t.start)}-${fmtSec(t.end)}s] (panel ${i + 1}) ${capFirst(sentence(r(b.camera)))} ${capFirst(sentence(r(b.action)))}`.trim();
     if (p.dialogue.trim()) {
       // Omni: dấu hai chấm + thoại KHÔNG ngoặc kép = lời nói; có ngoặc kép = chữ hiện trên hình.
       line += ` ${speakerName(p.speaker.trim()) || 'The character'} says: ${sentence(stripQuotes(p.dialogue.trim()))}`;
     }
     out.push(line);
   });
+  out.push('');
 
   const { ambience, music, sfx } = data.audio;
+  const isNone = (x: string) => !x || /^(none|no|silence|n\/a)$/i.test(x);
+  const sounds = [bare(ambience), bare(sfx)].filter((x) => !isNone(x));
+  const m = bare(music);
+  out.push(`Audio: ${[sounds.join(', '), isNone(m) ? 'no music' : `music: ${m}`].filter(Boolean).join('; ')}.`);
   out.push(
-    `Audio: ambience: ${bare(ambience) || 'none'}; music: ${bare(music) || 'none'}; sound effects: ${bare(sfx) || 'none'}.`,
-  );
-  out.push(
-    `No subtitles, no on-screen text, no watermark.${hasDialogue ? ' Only the dialogue lines above are spoken.' : ' No dialogue.'}`,
+    `No subtitles or on-screen text. ${
+      lines ? `Only the ${lines > 1 ? 'lines above are' : 'line above is'} spoken.` : 'No dialogue.'
+    }`,
   );
   // Google khuyên đặt câu chỉ dẫn về vai trò ảnh ở cuối prompt.
   out.push(
     format === 'api'
-      ? 'Use the images only as references for this video, not as literal first frames.'
-      : `Use ${[STORYBOARD_VAR, ...refs.map((x) => x.name)].map(atName).join(', ')} only as references for this video, not as literal first frames.`,
+      ? 'Use the images only as references for this video, not as first frames.'
+      : `Use ${[STORYBOARD_VAR, ...refs.map((x) => x.name)].map(atName).join(', ')} only as references for this video, not as first frames.`,
   );
 
-  // Dòng trống sau khối khai báo biến đã được thêm ở trên, các dòng còn lại cách nhau một xuống dòng.
-  return out.join('\n').replace(/\n\n\n+/g, '\n\n');
+  return out.join('\n').replace(/\n\n\n+/g, '\n\n').trim();
 }
 
 /** Tóm tắt trạng thái cuối của beat trước để beat sau nối tiếp liền mạch. */
@@ -626,6 +662,7 @@ export function normalizeGenerated(raw: any, refs: RefInfo[]): GeneratedData {
     },
     audioNoteVi: str(raw?.audioNoteVi),
     continuityEn: str(raw?.continuityEn),
+    videoLookEn: str(raw?.videoLookEn),
     endState: {
       positions: str(raw?.endState?.positions),
       props: str(raw?.endState?.props),
