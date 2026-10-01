@@ -336,6 +336,7 @@ ${
 
 RULES
 - No text, captions, signs with invented writing, numbers or logos in any panel.
+- Never use quotation marks in any English field (the video model renders quoted words as on-screen text).
 - The four panels must look like the same scene: same characters, objects, costumes, location and lighting; only pose, position and framing change.${
     locked?.blocking.trim() ? '\n- Respect the locked screen direction: do not swap which side of the frame each character is on.' : ''
   }

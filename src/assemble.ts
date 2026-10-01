@@ -24,6 +24,12 @@ export const fmtSec = (n: number) => String(round1(n));
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
 
+/**
+ * Bỏ dấu ngoặc kép. Với Omni (và model tạo ảnh của Google), chữ trong ngoặc kép bị hiểu là chữ
+ * cần hiện lên hình, nên thoại viết trong ngoặc kép sẽ thành phụ đề thay vì được nói.
+ */
+export const stripQuotes = (t: string): string => t.replace(/["“”„«»]/g, '');
+
 /** Thêm dấu chấm cuối câu nếu thiếu, để ghép câu không bị dính. */
 const sentence = (t: string): string => {
   const x = t.trim();
@@ -385,7 +391,7 @@ export function buildGridImagePrompt(
 ): string {
   const refs = buildRefs(characters, plan.refIds, data.descriptors);
   const mode: TokenMode = format === 'api' ? 'apiImage' : 'plain';
-  const r = (t: string) => renderTokens(t, refs, mode);
+  const r = (t: string) => stripQuotes(renderTokens(t, refs, mode));
   const anchors = anchorRefs(refs, data);
   const label = (a: AnchorRef) => (format === 'api' ? `${a.name} (Ref ${a.index})` : a.name);
   const out: string[] = [];
@@ -445,7 +451,7 @@ export function buildVideoPrompt(
 ): string {
   const refs = buildRefs(characters, plan.refIds, data.descriptors);
   const mode: TokenMode = format === 'api' ? 'apiVideo' : 'plain';
-  const r = (t: string) => renderTokens(t, refs, mode);
+  const r = (t: string) => stripQuotes(renderTokens(t, refs, mode));
   const tl = timeline(plan);
   const hasDialogue = plan.panels.some((p) => p.dialogue.trim());
   const board = format === 'api' ? '<IMAGE_REF_0>' : STORYBOARD_VAR;
@@ -481,7 +487,8 @@ export function buildVideoPrompt(
     if (!t || !p) return;
     let line = `[${fmtSec(t.start)}-${fmtSec(t.end)}s] (panel ${i + 1}) ${sentence(r(b.camera))} ${sentence(r(b.action))}`.trim();
     if (p.dialogue.trim()) {
-      line += ` ${p.speaker.trim() || 'The character'} says: "${p.dialogue.trim()}"`;
+      // Omni: dấu hai chấm + thoại KHÔNG ngoặc kép = lời nói; có ngoặc kép = chữ hiện trên hình.
+      line += ` ${stripQuotes(p.speaker.trim()) || 'The character'} says: ${sentence(stripQuotes(p.dialogue.trim()))}`;
     }
     out.push(line);
   });
