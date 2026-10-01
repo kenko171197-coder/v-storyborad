@@ -373,30 +373,19 @@ export interface AnchorRef {
   index: number;
 }
 
-/** Bật/tắt từng ảnh mốc trong prompt ảnh lưới (mặc định bật nếu beat có ảnh đó). */
-export interface AnchorOptions {
-  useLocation?: boolean;
-  usePrevGrid?: boolean;
-}
-
-export function anchorRefs(refs: RefInfo[], data: GeneratedData, opts: AnchorOptions = {}): AnchorRef[] {
+export function anchorRefs(refs: RefInfo[], data: GeneratedData): AnchorRef[] {
   const out: AnchorRef[] = [];
-  if (data.anchors?.location && opts.useLocation !== false) out.push({ kind: 'location', name: LOCATION_VAR, index: refs.length + out.length + 1 });
-  if (data.anchors?.prevGrid && opts.usePrevGrid !== false) out.push({ kind: 'prevGrid', name: PREV_GRID_VAR, index: refs.length + out.length + 1 });
+  if (data.anchors?.location) out.push({ kind: 'location', name: LOCATION_VAR, index: refs.length + out.length + 1 });
+  if (data.anchors?.prevGrid) out.push({ kind: 'prevGrid', name: PREV_GRID_VAR, index: refs.length + out.length + 1 });
   return out;
 }
 
 /** Mọi ảnh cần gắn khi tạo ảnh lưới, theo đúng thứ tự Ref 1, 2, 3... (dùng cho phần hướng dẫn). */
-export function gridImageRefs(
-  plan: PanelPlan,
-  data: GeneratedData,
-  characters: Character[],
-  opts: AnchorOptions = {},
-) {
+export function gridImageRefs(plan: PanelPlan, data: GeneratedData, characters: Character[]) {
   const refs = buildRefs(characters, plan.refIds, data.descriptors);
   return [
     ...refs.map((r) => ({ name: r.name, index: r.index, label: r.name })),
-    ...anchorRefs(refs, data, opts).map((a) => ({
+    ...anchorRefs(refs, data).map((a) => ({
       name: a.name,
       index: a.index,
       label: a.kind === 'location' ? 'ảnh bối cảnh' : 'ảnh lưới của beat trước',
@@ -414,12 +403,11 @@ export function buildGridImagePrompt(
   characters: Character[],
   aspect: AspectRatio,
   format: PromptFormat,
-  opts: AnchorOptions = {},
 ): string {
   const refs = buildRefs(characters, plan.refIds, data.descriptors);
   const mode: TokenMode = format === 'api' ? 'apiImage' : 'plain';
   const r = (t: string) => stripQuotes(renderTokens(t, refs, mode));
-  const anchors = anchorRefs(refs, data, opts);
+  const anchors = anchorRefs(refs, data);
   const label = (a: AnchorRef) => (format === 'api' ? `${a.name} (Ref ${a.index})` : atName(a.name));
   const loc = anchors.find((a) => a.kind === 'location');
   const prev = anchors.find((a) => a.kind === 'prevGrid');

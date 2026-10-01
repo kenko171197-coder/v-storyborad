@@ -37,7 +37,6 @@ import {
   timeline,
   tokensToMentions,
   totalDuration,
-  type AnchorOptions,
 } from './assemble.ts';
 import type {
   AspectRatio,
@@ -227,8 +226,6 @@ export default function App() {
   /** Chỉ dùng trên màn hình nhỏ: đang xem phần soạn beat hay phần panel/prompt */
   const [mobileTab, setMobileTab] = useState<'beat' | 'result'>('beat');
   const [promptFormat, setPromptFormat] = useState<PromptFormat>(getPromptFormat());
-  /** Có gắn ảnh bối cảnh / ảnh lưới beat trước vào prompt ảnh lưới hay không (bật/tắt không cần tạo lại) */
-  const [anchorOpts, setAnchorOpts] = useState<AnchorOptions>({ useLocation: true, usePrevGrid: true });
   const resultRef = useRef<HTMLElement>(null);
   const [, setSettingsVersion] = useState(0); // đổi giá trị để vẽ lại chấm cảnh báo key sau khi lưu
 
@@ -253,9 +250,8 @@ export default function App() {
       (result.sceneKey !== undefined && result.sceneKey !== bibleKey(bible)));
 
   const gridPrompt = useMemo(
-    () =>
-      result ? buildGridImagePrompt(result.plan, result.data, characters, result.aspect, promptFormat, anchorOpts) : '',
-    [result, characters, promptFormat, anchorOpts],
+    () => (result ? buildGridImagePrompt(result.plan, result.data, characters, result.aspect, promptFormat) : ''),
+    [result, characters, promptFormat],
   );
   const videoPrompt = useMemo(
     () => (result ? buildVideoPrompt(result.plan, result.data, characters, promptFormat) : ''),
@@ -694,7 +690,7 @@ export default function App() {
     savePromptFormat(f);
   };
   const resultRefs = result ? buildRefs(characters, result.plan.refIds, result.data.descriptors) : [];
-  const gridRefs = result ? gridImageRefs(result.plan, result.data, characters, anchorOpts) : [];
+  const gridRefs = result ? gridImageRefs(result.plan, result.data, characters) : [];
   const currentBeat = result ? history.find((h) => h.id === currentBeatId) : undefined;
   // Bản mới nhất của beat trước (ảnh lưới / trạng thái cuối có thể được thêm sau khi phân tích panel)
   const prevBeat = contextBeat ? (history.find((h) => h.id === contextBeat.id) ?? contextBeat) : null;
@@ -1345,36 +1341,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {(result.data.anchors?.location || result.data.anchors?.prevGrid) && (
-                  <div>
-                    <label className={fieldLabel}>Ảnh mốc gắn vào prompt ảnh lưới (tắt nếu không gắn ảnh đó trong Flow)</label>
-                    <div className="flex flex-wrap gap-x-5 gap-y-2">
-                      {result.data.anchors?.location && (
-                        <label className="flex items-center gap-2 text-sm font-bold text-stone-600 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            className="accent-gold w-4 h-4"
-                            checked={anchorOpts.useLocation !== false}
-                            onChange={(e) => setAnchorOpts((o) => ({ ...o, useLocation: e.target.checked }))}
-                          />
-                          @location (ảnh bối cảnh)
-                        </label>
-                      )}
-                      {result.data.anchors?.prevGrid && (
-                        <label className="flex items-center gap-2 text-sm font-bold text-stone-600 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            className="accent-gold w-4 h-4"
-                            checked={anchorOpts.usePrevGrid !== false}
-                            onChange={(e) => setAnchorOpts((o) => ({ ...o, usePrevGrid: e.target.checked }))}
-                          />
-                          @prev_storyboard (ảnh lưới beat trước)
-                        </label>
-                      )}
-                    </div>
-                  </div>
-                )}
-
                 <PromptBlock
                   icon={<ImageIcon size={16} />}
                   title="Prompt ảnh lưới 2x2"
@@ -1591,7 +1557,7 @@ export default function App() {
 
                       <div className="flex flex-wrap items-center gap-2 mb-3">
                         <CopyButton
-                          text={buildGridImagePrompt(item.plan, item.generatedData, characters, item.aspect, promptFormat, anchorOpts)}
+                          text={buildGridImagePrompt(item.plan, item.generatedData, characters, item.aspect, promptFormat)}
                           label="Prompt ảnh"
                         />
                         <CopyButton

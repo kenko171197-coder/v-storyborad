@@ -25,7 +25,6 @@ Tổng thời lượng 4 panel không được vượt 10 giây (giới hạn c�
   - Khi bật **Khoá cho mọi beat**, mọi beat dùng nguyên văn hồ sơ này (AI không viết lại phong cách và mô tả tham chiếu); prompt ảnh và video có thêm dòng *Location* và *Screen direction*. Sửa hồ sơ sau khi tạo prompt sẽ hiện cảnh báo prompt đã cũ.
 - **Ảnh bối cảnh** (trong Hồ sơ cảnh, không bắt buộc): khi hồ sơ đang khoá, prompt ảnh lưới của mọi beat có thêm tham chiếu `location`.
 - **Ảnh lưới đã tạo** (dưới prompt video): tải lên ảnh lưới 2x2 bạn đã tạo cho beat. Beat sau (khi bật *Nối tiếp beat trước*) gắn ảnh này làm tham chiếu `prev_storyboard` để giữ cùng nét vẽ, nhân vật và bối cảnh; AI ở bước 2 cũng được xem ảnh này. Ảnh lớn được thu nhỏ còn cạnh dài 1536px.
-- Hai công tắc **@location** và **@prev_storyboard** (trên prompt ảnh lưới) bỏ ảnh mốc tương ứng khỏi prompt ngay, không cần tạo lại; dùng khi không gắn ảnh đó trong Flow.
 - **Trạng thái cuối beat** (dưới prompt video): vị trí và tư thế, đồ vật, thay đổi cần giữ ở cuối panel 4. AI ghi sẵn, bạn sửa được. Khi bật **Nối tiếp beat trước**, panel 1 của beat sau bắt buộc bắt đầu từ trạng thái này. Nếu trạng thái cuối khác với hồ sơ cảnh (vd. vòng cổ đã mất), trạng thái cuối được ưu tiên, và prompt có thêm dòng *Continuity* để công cụ vẽ cũng biết.
 
 ## Cấu trúc prompt
