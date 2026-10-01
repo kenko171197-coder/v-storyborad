@@ -9,6 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { draftSceneBible, generateBeatPrompts, planBeat } from './gemini.ts';
 import { EndStateCard, GridImageCard, SceneBibleCard } from './SceneCards.tsx';
 import SettingsModal from './SettingsModal.tsx';
+import { useConfirm } from './confirm.tsx';
 import { copyText, newId } from './id.ts';
 import { clearDraft, loadDraft, saveDraft } from './storage.ts';
 import { getPromptFormat, hasApiKey, savePromptFormat } from './settings.ts';
@@ -70,15 +71,12 @@ interface Result {
 
 // --- Small components ---
 const CopyButton = ({ text, label }: { text: string; label?: string }) => {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'ok' | 'fail' | null>(null);
 
   const handleCopy = async () => {
-    if (!(await copyText(text))) {
-      alert('Không copy được. Hãy bôi đen đoạn prompt rồi copy thủ công.');
-      return;
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    // Không dùng alert(): trong khung nhúng (AI Studio) alert có thể bị chặn.
+    setCopied((await copyText(text)) ? 'ok' : 'fail');
+    setTimeout(() => setCopied(null), 2500);
   };
 
   return (
@@ -87,8 +85,10 @@ const CopyButton = ({ text, label }: { text: string; label?: string }) => {
       className="px-3 py-2 sm:px-2.5 sm:py-1.5 bg-stone-50 sm:bg-transparent hover:bg-stone-100 rounded-lg transition-all text-stone-500 hover:text-gold-dark flex items-center gap-1.5 text-xs font-bold shrink-0"
       title="Copy"
     >
-      {copied ? <Check size={13} className="text-gold" /> : <Copy size={13} />}
-      <span>{copied ? 'Đã copy' : label ?? 'Copy'}</span>
+      {copied === 'ok' ? <Check size={13} className="text-gold" /> : <Copy size={13} />}
+      <span className={copied === 'fail' ? 'text-red-500' : ''}>
+        {copied === 'ok' ? 'Đã copy' : copied === 'fail' ? 'Không copy được, hãy bôi đen để copy' : label ?? 'Copy'}
+      </span>
     </button>
   );
 };
@@ -211,6 +211,7 @@ export default function App() {
   const [history, setHistory] = useState<BeatSequence[]>([]);
   const [bible, setBible] = useState<SceneBible>(emptyBible);
   const [isDrafting, setIsDrafting] = useState(false);
+  const [ask, confirmDialog] = useConfirm();
   /** Beat đang hiển thị trong phần kết quả (id trong lịch sử), dùng làm "beat trước" khi nối tiếp */
   const [currentBeatId, setCurrentBeatId] = useState<string | null>(null);
   /** Đã nạp xong bản nháp tự lưu chưa (chưa nạp xong thì không ghi đè) */
@@ -378,8 +379,8 @@ export default function App() {
     e.target.value = '';
   };
 
-  const handleNewProject = () => {
-    if (!confirm('Tạo project mới? Tham chiếu, kịch bản, panel và lịch sử hiện tại sẽ bị xóa (hãy Lưu project trước nếu cần giữ).')) {
+  const handleNewProject = async () => {
+    if (!(await ask('Tạo project mới? Tham chiếu, kịch bản, panel và lịch sử hiện tại sẽ bị xóa (hãy Lưu project trước nếu cần giữ).'))) {
       return;
     }
     applyProject({ version: PROJECT_VERSION });
@@ -601,7 +602,7 @@ export default function App() {
       setShowSettings(true);
       return;
     }
-    if (hasBibleContent(bible) && !confirm('Thay hồ sơ cảnh hiện tại bằng bản nháp mới của AI?')) return;
+    if (hasBibleContent(bible) && !(await ask('Thay hồ sơ cảnh hiện tại bằng bản nháp mới của AI?'))) return;
     setError('');
     setIsDrafting(true);
     try {
@@ -616,9 +617,9 @@ export default function App() {
     }
   };
 
-  const takeBibleFromResult = () => {
+  const takeBibleFromResult = async () => {
     if (!result) return;
-    if (hasBibleContent(bible) && !confirm('Thay phong cách và mô tả tham chiếu trong hồ sơ cảnh bằng của beat đang xem?')) {
+    if (hasBibleContent(bible) && !(await ask('Thay phong cách và mô tả tham chiếu trong hồ sơ cảnh bằng của beat đang xem?'))) {
       return;
     }
     const d = result.data;
@@ -840,7 +841,7 @@ export default function App() {
             onDraft={handleDraftBible}
             onTakeFromResult={takeBibleFromResult}
             onClear={() => {
-              if (confirm('Xoá hồ sơ cảnh?')) setBible(emptyBible());
+              ask('Xoá hồ sơ cảnh?').then((ok) => ok && setBible(emptyBible()));
             }}
           />
 
@@ -1528,8 +1529,8 @@ export default function App() {
                           </span>
                         </div>
                         <button
-                          onClick={() => {
-                            if (confirm('Xóa beat này khỏi lịch sử?')) {
+                          onClick={async () => {
+                            if (await ask('Xóa beat này khỏi lịch sử?')) {
                               setHistory((prev) => prev.filter((h) => h.id !== item.id));
                             }
                           }}
@@ -1584,6 +1585,8 @@ export default function App() {
           </>
         )}
       </AnimatePresence>
+
+      {confirmDialog}
 
       <SettingsModal
         open={showSettings}
