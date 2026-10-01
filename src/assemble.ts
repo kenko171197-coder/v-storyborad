@@ -7,6 +7,7 @@ import type {
   PanelRole,
   PromptFormat,
 } from './types.ts';
+import { newId } from './id.ts';
 
 // Giới hạn của Gemini Omni 1.1 Flash: mỗi lần tạo tối đa 10 giây.
 export const MIN_TOTAL_SEC = 6;
@@ -95,6 +96,8 @@ export function analyzePlan(plan: PanelPlan): string[] {
 export function planBlockReason(plan: PanelPlan): string | null {
   if (plan.panels.length !== 4) return 'Cần đúng 4 panel.';
   if (plan.panels.some((p) => !p.moment.trim())) return 'Mỗi panel cần có nội dung.';
+  const bad = plan.panels.findIndex((p) => !(Number.isFinite(p.durationSec) && p.durationSec > 0));
+  if (bad >= 0) return `Panel ${bad + 1} cần thời lượng lớn hơn 0 giây.`;
   if (totalDuration(plan) > MAX_TOTAL_SEC) return `Tổng thời lượng phải ≤ ${MAX_TOTAL_SEC}s.`;
   return null;
 }
@@ -144,15 +147,36 @@ export function duplicateRefNames(characters: Character[]): string[] {
   return [...seen.entries()].filter(([, n]) => n > 1).map(([k]) => k);
 }
 
-/** Đoán tham chiếu dùng trong beat: tên AI trả về + tên xuất hiện trong kịch bản (kể cả @mention). */
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Ký tự thuộc một từ (gồm cả chữ có dấu tiếng Việt). */
+const WORD = '[\\p{L}\\p{M}\\p{N}_]';
+
+/** @tên trong kịch bản, không khớp khi tên chỉ là phần đầu của một từ dài hơn (@cho ≠ @chomuc). */
+const hasMention = (script: string, name: string) =>
+  new RegExp(`@${escapeRe(name)}(?!${WORD})`, 'iu').test(script);
+
+/** Tên đứng thành từ riêng: "an" không khớp với "bạn", "meo" không khớp với "meow". */
+const hasWord = (script: string, name: string) =>
+  new RegExp(`(^|[^\\p{L}\\p{M}\\p{N}_])${escapeRe(name)}(?!${WORD})`, 'iu').test(script);
+
+/**
+ * Đoán tham chiếu dùng trong beat: tên AI trả về + tên xuất hiện trong kịch bản.
+ * Nếu kịch bản có dùng @mention thì chỉ tính các @mention, vì tên biến như "cho"
+ * trùng với từ thường gặp trong tiếng Việt.
+ */
 export function detectRefIds(characters: Character[], scriptText: string, aiNames: string[]): string[] {
-  const script = scriptText.toLowerCase();
-  const ai = aiNames.map((n) => n.trim().toLowerCase()).filter(Boolean);
-  return refCharacters(characters)
-    .filter((c) => {
-      const n = c.name.trim().toLowerCase();
-      return n !== '' && (ai.includes(n) || script.includes(n));
-    })
+  const script = scriptText.normalize('NFC');
+  const ai = aiNames.map((n) => n.normalize('NFC').trim().toLowerCase()).filter(Boolean);
+  const refs = refCharacters(characters)
+    .map((c) => ({ id: c.id, name: c.name.normalize('NFC').trim() }))
+    .filter((c) => c.name !== '');
+  const usesMentions = refs.some((c) => hasMention(script, c.name));
+  return refs
+    .filter(
+      (c) =>
+        ai.includes(c.name.toLowerCase()) ||
+        (usesMentions ? hasMention(script, c.name) : hasWord(script, c.name)),
+    )
     .map((c) => c.id);
 }
 
@@ -322,7 +346,7 @@ export function normalizePlan(raw: any, refIds: string[]): PanelPlan {
     const p = rawPanels[i] ?? {};
     const dur = Number(p.durationSec);
     return {
-      id: crypto.randomUUID(),
+      id: newId(),
       role: PANEL_ROLES.includes(p.role) ? (p.role as PanelRole) : PANEL_ROLES[i],
       moment: str(p.moment),
       shotSize: str(p.shotSize),

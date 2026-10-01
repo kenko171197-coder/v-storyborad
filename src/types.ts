@@ -91,4 +91,6 @@ export interface BeatSequence {
   aspect: AspectRatio;
   plan: PanelPlan;
   generatedData: GeneratedData;
+  /** id của beat mà beat này nối tiếp (nếu có) */
+  prevId?: string;
 }

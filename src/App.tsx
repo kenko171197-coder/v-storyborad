@@ -1,13 +1,15 @@
-import React, { useState, useRef, useMemo } from 'react';
+import React, { useState, useRef, useMemo, useEffect } from 'react';
 import {
   Plus, Trash2, Copy, Loader2, Check, Download,
   FolderOpen, Sparkles, User, X, Image as ImageIcon,
   Info, ArrowRight, ArrowLeft, ArrowUp, ArrowDown, History, Quote, TriangleAlert, Video, Settings,
-  PenLine, LayoutGrid,
+  PenLine, LayoutGrid, FilePlus,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { generateBeatPrompts, planBeat } from './gemini.ts';
 import SettingsModal from './SettingsModal.tsx';
+import { copyText, newId } from './id.ts';
+import { clearDraft, loadDraft, saveDraft } from './storage.ts';
 import { getPromptFormat, hasApiKey, savePromptFormat } from './settings.ts';
 import {
   MAX_TOTAL_SEC,
@@ -54,8 +56,11 @@ interface Result {
 const CopyButton = ({ text, label }: { text: string; label?: string }) => {
   const [copied, setCopied] = useState(false);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text);
+  const handleCopy = async () => {
+    if (!(await copyText(text))) {
+      alert('Không copy được. Hãy bôi đen đoạn prompt rồi copy thủ công.');
+      return;
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -120,6 +125,30 @@ const DurationBar = ({ plan }: { plan: PanelPlan }) => {
   );
 };
 
+/** Ô số giây: cho phép xóa trống khi đang gõ (lúc đó thời lượng tính là 0 và nút Tạo prompt bị chặn). */
+const DurationInput = ({ value, onChange }: { value: number; onChange: (v: number) => void }) => {
+  const [text, setText] = useState(String(value));
+  useEffect(() => {
+    if (Number(text) !== value) setText(String(value));
+  }, [value]);
+  return (
+    <input
+      type="number"
+      inputMode="decimal"
+      min={0.5}
+      step={0.5}
+      className={fieldBase}
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = parseFloat(e.target.value);
+        onChange(Number.isFinite(n) ? n : 0);
+      }}
+      onBlur={() => setText(String(value))}
+    />
+  );
+};
+
 const fieldLabel = 'block text-[11px] font-semibold text-stone-400 mb-1';
 const fieldBase =
   'w-full bg-stone-50/70 border border-stone-100 rounded-xl px-3 py-2.5 sm:py-2 text-base sm:text-sm text-stone-700 outline-none focus:border-gold focus:bg-white transition-colors placeholder:text-stone-300';
@@ -137,6 +166,10 @@ export default function App() {
   const [contextBeat, setContextBeat] = useState<BeatSequence | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [history, setHistory] = useState<BeatSequence[]>([]);
+  /** Beat đang hiển thị trong phần kết quả (id trong lịch sử), dùng làm "beat trước" khi nối tiếp */
+  const [currentBeatId, setCurrentBeatId] = useState<string | null>(null);
+  /** Đã nạp xong bản nháp tự lưu chưa (chưa nạp xong thì không ghi đè) */
+  const [hydrated, setHydrated] = useState(false);
 
   const [isPlanning, setIsPlanning] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -182,14 +215,14 @@ export default function App() {
     const reader = new FileReader();
     reader.onloadend = () => {
       const base64 = reader.result as string;
-      const newCharId = crypto.randomUUID();
+      const newCharId = newId();
       setCharacters((prev) => [
         ...prev,
         {
           id: newCharId,
           name: '',
           appearance: '',
-          images: [{ id: crypto.randomUUID(), base64, mimeType: file.type }],
+          images: [{ id: newId(), base64, mimeType: file.type || 'image/png' }],
         },
       ]);
       setSelectedCharacterId(newCharId);
@@ -208,18 +241,23 @@ export default function App() {
   };
 
   // --- Project save / open ---
+  const projectSnapshot = (text: string) => ({
+    version: PROJECT_VERSION,
+    timestamp: Date.now(),
+    characters,
+    scriptText: text,
+    aspect,
+    plan,
+    planScript,
+    result,
+    history,
+    contextBeat,
+    currentBeatId,
+    continueFromPrev,
+  });
+
   const handleSaveProject = () => {
-    const projectData = {
-      version: PROJECT_VERSION,
-      timestamp: Date.now(),
-      characters,
-      scriptText: editorRef.current?.innerText || '',
-      aspect,
-      plan,
-      planScript,
-      result,
-      history,
-    };
+    const projectData = projectSnapshot(editorRef.current?.innerText || '');
 
     const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -237,6 +275,34 @@ export default function App() {
     if (editorRef.current) editorRef.current.innerText = text;
   };
 
+  /** Nạp dữ liệu project (từ file hoặc từ bản nháp tự lưu). Trả về false nếu là project bản cũ. */
+  const applyProject = (data: any): boolean => {
+    setCharacters(Array.isArray(data.characters) ? data.characters : []);
+    setEditorText(typeof data.scriptText === 'string' ? data.scriptText : '');
+    setContextBeat(null);
+    setCurrentBeatId(null);
+    setSelectedCharacterId(null);
+    setMentionQuery(null);
+
+    if (data.version !== PROJECT_VERSION) {
+      // Project cũ (bản 3x3 / 2x2 trước đây) có cấu trúc dữ liệu khác, không nạp lại được.
+      setPlan(null);
+      setPlanScript('');
+      setResult(null);
+      setHistory([]);
+      return false;
+    }
+    if (data.aspect === '16:9' || data.aspect === '9:16') setAspect(data.aspect);
+    setPlan(data.plan ?? null);
+    setPlanScript(data.planScript ?? '');
+    setResult(data.result ?? null);
+    setHistory(Array.isArray(data.history) ? data.history : []);
+    setContextBeat(data.contextBeat ?? null);
+    setCurrentBeatId(data.currentBeatId ?? null);
+    setContinueFromPrev(!!data.continueFromPrev);
+    return true;
+  };
+
   const handleOpenProject = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -245,25 +311,11 @@ export default function App() {
     reader.onload = (event) => {
       try {
         const data = JSON.parse(event.target?.result as string);
-        setError('');
-        if (data.characters) setCharacters(data.characters);
-        if (data.scriptText !== undefined) setEditorText(data.scriptText);
-
-        if (data.version === PROJECT_VERSION) {
-          if (data.aspect) setAspect(data.aspect);
-          setPlan(data.plan ?? null);
-          setPlanScript(data.planScript ?? '');
-          setResult(data.result ?? null);
-          setHistory(data.history ?? []);
-        } else {
-          // Project cũ (bản 3x3 / 2x2 trước đây) có cấu trúc dữ liệu khác, không nạp lại được.
-          setPlan(null);
-          setResult(null);
-          setHistory([]);
-          setError('Đây là project bản cũ: chỉ nạp được tham chiếu và kịch bản. Hãy phân tích panel lại.');
-        }
-        setContextBeat(null);
-        setSelectedCharacterId(null);
+        setError(
+          applyProject(data)
+            ? ''
+            : 'Đây là project bản cũ: chỉ nạp được tham chiếu và kịch bản. Hãy phân tích panel lại.',
+        );
       } catch (err) {
         console.error('Error parsing project file:', err);
         setError('Không mở được file project. Định dạng không hợp lệ.');
@@ -272,6 +324,56 @@ export default function App() {
     reader.readAsText(file);
     e.target.value = '';
   };
+
+  const handleNewProject = () => {
+    if (!confirm('Tạo project mới? Tham chiếu, kịch bản, panel và lịch sử hiện tại sẽ bị xóa (hãy Lưu project trước nếu cần giữ).')) {
+      return;
+    }
+    applyProject({ version: PROJECT_VERSION });
+    setAspect('16:9');
+    setError('');
+    setMobileTab('beat');
+    clearDraft();
+  };
+
+  // --- Tự lưu bản nháp ---
+  // Trang có thể bị tải lại bất ngờ (máy chủ Vite mất kết nối rồi tự reload, điện thoại đóng tab chạy nền,
+  // lỡ bấm F5...). Mọi thứ đang làm được lưu vào trình duyệt và nạp lại khi mở trang.
+  useEffect(() => {
+    let cancelled = false;
+    loadDraft<any>().then((draft) => {
+      if (cancelled) return;
+      if (draft && draft.version === PROJECT_VERSION) applyProject(draft);
+      setHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const latestDraft = useRef<unknown>(null);
+  useEffect(() => {
+    if (!hydrated) return;
+    latestDraft.current = projectSnapshot(scriptText);
+    const timer = setTimeout(() => saveDraft(latestDraft.current), 400);
+    return () => clearTimeout(timer);
+  }, [hydrated, characters, scriptText, aspect, plan, planScript, result, history, contextBeat, currentBeatId, continueFromPrev]);
+
+  // Ghi ngay khi rời trang / chuyển sang ứng dụng khác, không chờ hết thời gian chờ ở trên.
+  useEffect(() => {
+    const flush = () => {
+      if (latestDraft.current) saveDraft(latestDraft.current);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, []);
 
   // --- @mention ---
   const handleInput = () => {
@@ -336,7 +438,11 @@ export default function App() {
       return;
     }
 
-    const prev = continueFromPrev && history.length > 0 ? history[0] : null;
+    // Beat trước = beat đang hiển thị (vừa tạo hoặc vừa khôi phục), nếu không còn thì lấy beat mới nhất.
+    const prev =
+      continueFromPrev && history.length > 0
+        ? (history.find((h) => h.id === currentBeatId) ?? history[0])
+        : null;
     setError('');
     setIsPlanning(true);
     setMobileTab('result');
@@ -376,17 +482,20 @@ export default function App() {
     setIsGenerating(true);
     try {
       const data = await generateBeatPrompts(text, snapshot, characters, aspect, contextBeat);
+      const beatId = newId();
       setResult({ plan: snapshot, data, aspect });
+      setCurrentBeatId(beatId);
       // Cuộn tới phần prompt vừa tạo (hữu ích nhất trên di động, nơi phần kết quả nằm dưới 4 panel).
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
       setHistory((prev) => [
         {
-          id: crypto.randomUUID(),
+          id: beatId,
           timestamp: Date.now(),
           scriptText: text,
           aspect,
           plan: snapshot,
           generatedData: data,
+          prevId: contextBeat?.id,
         },
         ...prev,
       ]);
@@ -422,7 +531,9 @@ export default function App() {
     setPlan(item.plan);
     setPlanScript(item.scriptText);
     setResult({ plan: item.plan, data: item.generatedData, aspect: item.aspect });
-    setContextBeat(null);
+    // Giữ liên kết với beat trước để "Tạo lại prompt" vẫn nối tiếp đúng.
+    setContextBeat(item.prevId ? (history.find((h) => h.id === item.prevId) ?? null) : null);
+    setCurrentBeatId(item.id);
     setShowHistory(false);
     setMobileTab('result');
   };
@@ -455,6 +566,13 @@ export default function App() {
               </h1>
             </div>
             <div className="flex items-center gap-1.5">
+              <button
+                onClick={handleNewProject}
+                className="p-2.5 lg:p-2 bg-white border border-stone-200 rounded-xl transition-all text-stone-600 hover:bg-gold-light hover:text-gold-dark hover:border-gold-light shadow-sm"
+                title="Project mới"
+              >
+                <FilePlus size={16} />
+              </button>
               <label
                 className="p-2.5 lg:p-2 bg-white border border-stone-200 rounded-xl transition-all text-stone-600 hover:bg-gold-light hover:text-gold-dark hover:border-gold-light cursor-pointer shadow-sm"
                 title="Mở project"
@@ -889,13 +1007,9 @@ export default function App() {
                       </div>
                       <div>
                         <label className={fieldLabel}>Thời lượng (giây)</label>
-                        <input
-                          type="number"
-                          min={0.5}
-                          step={0.5}
-                          className={fieldBase}
+                        <DurationInput
                           value={p.durationSec}
-                          onChange={(e) => patchPanel(p.id, { durationSec: Number(e.target.value) })}
+                          onChange={(v) => patchPanel(p.id, { durationSec: v })}
                         />
                       </div>
                     </div>
@@ -1224,7 +1338,7 @@ export default function App() {
 
               <div className="p-5 sm:p-8 border-t border-stone-100 bg-stone-50/50">
                 <p className="text-[11px] font-semibold text-stone-400 text-center leading-relaxed">
-                  Lịch sử chỉ nằm trong phiên làm việc này. Bấm nút Lưu project để giữ lại.
+                  Lịch sử được tự lưu trên trình duyệt này. Bấm nút Lưu project để giữ một bản ra file.
                 </p>
               </div>
             </motion.aside>
