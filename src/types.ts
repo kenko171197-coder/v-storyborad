@@ -49,6 +49,8 @@ export interface PanelPlan {
   panels: PlanPanel[];
   /** Cảnh báo do AI đưa ra về nội dung (quá dài, quá mỏng...) */
   warnings: string[];
+  /** Hành động chính mà storyboard này diễn (tiếng Việt, tối đa 2 cho một video) */
+  actions?: string[];
 }
 
 // --- Kết quả bước 2 ---
@@ -69,6 +71,8 @@ export interface VideoBeat {
   /** Không chứa thoại, thoại được ghép từ plan */
   action: string;
   noteVi: string;
+  /** Âm thanh xảy ra trong cảnh này (tiếng Anh); có thể thiếu ở project cũ */
+  sfx?: string;
 }
 
 /** Ảnh lưu trong project (data URL base64) */

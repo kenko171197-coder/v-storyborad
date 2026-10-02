@@ -70,6 +70,17 @@ interface Result {
   sceneKey?: string;
 }
 
+/** Một storyboard (một video). Kịch bản nhiều hành động được chia thành nhiều phần, phần sau nối tiếp phần trước. */
+interface PlanPart {
+  id: string;
+  /** Đoạn kịch bản mà phần này diễn */
+  script: string;
+  plan: PanelPlan;
+  result: Result | null;
+  /** id mục lịch sử đã tạo cho phần này (null = chưa tạo prompt) */
+  beatId: string | null;
+}
+
 // --- Small components ---
 const CopyButton = ({ text, label }: { text: string; label?: string }) => {
   const [copied, setCopied] = useState<'ok' | 'fail' | null>(null);
@@ -205,10 +216,11 @@ export default function App() {
   const [aspect, setAspect] = useState<AspectRatio>('16:9');
   const [continueFromPrev, setContinueFromPrev] = useState(false);
 
-  const [plan, setPlan] = useState<PanelPlan | null>(null);
-  const [planScript, setPlanScript] = useState('');
+  /** Các storyboard của lần phân tích gần nhất (thường 1; kịch bản nhiều hành động thì nhiều hơn) */
+  const [parts, setParts] = useState<PlanPart[]>([]);
+  const [activePart, setActivePart] = useState(0);
+  /** Beat trước mà Phần 1 nối tiếp (các phần sau nối tiếp phần đứng trước nó) */
   const [contextBeat, setContextBeat] = useState<BeatSequence | null>(null);
-  const [result, setResult] = useState<Result | null>(null);
   const [history, setHistory] = useState<BeatSequence[]>([]);
   const [bible, setBible] = useState<SceneBible>(emptyBible);
   const [isDrafting, setIsDrafting] = useState(false);
@@ -234,13 +246,38 @@ export default function App() {
 
   const totalImages = characters.reduce((sum, char) => sum + char.images.length, 0);
 
+  // --- Phần (storyboard) đang xem ---
+  const part = parts[activePart] ?? null;
+  const plan = part?.plan ?? null;
+  const result = part?.result ?? null;
+  const planScript = part?.script ?? '';
+
+  const updatePartAt = (index: number, fn: (p: PlanPart) => Partial<PlanPart>) =>
+    setParts((ps) => ps.map((p, i) => (i === index ? { ...p, ...fn(p) } : p)));
+  const setPlan = (fn: (p: PanelPlan | null) => PanelPlan | null) =>
+    updatePartAt(activePart, (p) => ({ plan: fn(p.plan) ?? p.plan }));
+  const setResult = (fn: (r: Result | null) => Result | null) =>
+    updatePartAt(activePart, (p) => ({ result: fn(p.result) }));
+
+  /** Beat mà phần thứ index nối tiếp: Phần 1 dùng beat trước (nếu bật nối tiếp), các phần sau dùng phần đứng trước. */
+  const previousFor = (index: number): BeatSequence | null => {
+    if (index === 0) return contextBeat ? (history.find((h) => h.id === contextBeat.id) ?? contextBeat) : null;
+    const id = parts[index - 1]?.beatId;
+    return id ? (history.find((h) => h.id === id) ?? null) : null;
+  };
+
   // --- Derived ---
   const warnings = useMemo(() => {
     if (!plan) return [];
     return Array.from(new Set([...analyzePlan(plan), ...plan.warnings]));
   }, [plan]);
 
-  const blockReason = plan ? planBlockReason(plan) : null;
+  const blockReason = plan
+    ? (planBlockReason(plan) ??
+      (activePart > 0 && !parts[activePart - 1]?.beatId
+        ? `Hãy tạo prompt cho Phần ${activePart} trước: phần này nối tiếp phần đó.`
+        : null))
+    : null;
 
   const stale =
     !!result &&
@@ -298,9 +335,8 @@ export default function App() {
     characters,
     scriptText: text,
     aspect,
-    plan,
-    planScript,
-    result,
+    parts,
+    activePart,
     history,
     contextBeat,
     currentBeatId,
@@ -340,16 +376,20 @@ export default function App() {
 
     if (data.version !== PROJECT_VERSION) {
       // Project cũ (bản 3x3 / 2x2 trước đây) có cấu trúc dữ liệu khác, không nạp lại được.
-      setPlan(null);
-      setPlanScript('');
-      setResult(null);
+      setParts([]);
+      setActivePart(0);
       setHistory([]);
       return false;
     }
     if (data.aspect === '16:9' || data.aspect === '9:16') setAspect(data.aspect);
-    setPlan(data.plan ?? null);
-    setPlanScript(data.planScript ?? '');
-    setResult(data.result ?? null);
+    // Project trước khi có chia phần lưu một plan duy nhất: đổi thành một phần.
+    const loadedParts: PlanPart[] = Array.isArray(data.parts)
+      ? data.parts
+      : data.plan
+        ? [{ id: newId(), script: data.planScript ?? '', plan: data.plan, result: data.result ?? null, beatId: data.result ? (data.currentBeatId ?? null) : null }]
+        : [];
+    setParts(loadedParts);
+    setActivePart(Math.min(Math.max(0, Number(data.activePart) || 0), Math.max(0, loadedParts.length - 1)));
     setHistory(Array.isArray(data.history) ? data.history : []);
     setContextBeat(data.contextBeat ?? null);
     setCurrentBeatId(data.currentBeatId ?? null);
@@ -412,7 +452,7 @@ export default function App() {
     latestDraft.current = projectSnapshot(scriptText);
     const timer = setTimeout(() => saveDraft(latestDraft.current), 400);
     return () => clearTimeout(timer);
-  }, [hydrated, characters, scriptText, aspect, plan, planScript, result, history, contextBeat, currentBeatId, continueFromPrev, bible]);
+  }, [hydrated, characters, scriptText, aspect, parts, activePart, history, contextBeat, currentBeatId, continueFromPrev, bible]);
 
   // Ghi ngay khi rời trang / chuyển sang ứng dụng khác, không chờ hết thời gian chờ ở trên.
   useEffect(() => {
@@ -534,11 +574,10 @@ export default function App() {
     setIsPlanning(true);
     setMobileTab('result');
     try {
-      const p = await planBeat(text, characters, prev, bible);
-      setPlan(p);
-      setPlanScript(text);
+      const planned = await planBeat(text, characters, prev, bible);
+      setParts(planned.map((p) => ({ id: newId(), script: p.script, plan: p.plan, result: null, beatId: null })));
+      setActivePart(0);
       setContextBeat(prev);
-      setResult(null);
     } catch (err) {
       console.error(err);
       setError(errorText('Không phân tích được panel. Kiểm tra API key và model trong Cài đặt.', err));
@@ -551,9 +590,8 @@ export default function App() {
   // --- Bước 2: tạo prompt từ plan đã sửa ---
   const handleGenerate = async () => {
     if (!plan) return;
-    const reason = planBlockReason(plan);
-    if (reason) {
-      setError(reason);
+    if (blockReason) {
+      setError(blockReason);
       return;
     }
 
@@ -563,20 +601,22 @@ export default function App() {
       return;
     }
 
+    // Ghi lại phần đang tạo: người dùng có thể chuyển tab trong lúc chờ AI.
+    const index = activePart;
     const snapshot: PanelPlan = JSON.parse(JSON.stringify(plan));
     const text = planScript || scriptText;
-    // Lấy bản mới nhất của beat trước (trạng thái cuối có thể đã được sửa sau khi phân tích panel).
-    const prev = contextBeat ? (history.find((h) => h.id === contextBeat.id) ?? contextBeat) : null;
+    // Bản mới nhất của beat/phần trước (trạng thái cuối, ảnh lưới có thể đã được thêm sau khi phân tích panel).
+    const prev = previousFor(index);
     setError('');
     setIsGenerating(true);
     try {
       const data = await generateBeatPrompts(text, snapshot, characters, aspect, prev, bible);
       const beatId = newId();
-      setResult({ plan: snapshot, data, aspect, sceneKey: bibleKey(bible) });
+      updatePartAt(index, () => ({ result: { plan: snapshot, data, aspect, sceneKey: bibleKey(bible) }, beatId }));
       setCurrentBeatId(beatId);
       // Cuộn tới phần prompt vừa tạo (hữu ích nhất trên di động, nơi phần kết quả nằm dưới 4 panel).
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 120);
-      setHistory((prev) => [
+      setHistory((items) => [
         {
           id: beatId,
           timestamp: Date.now(),
@@ -586,7 +626,7 @@ export default function App() {
           generatedData: data,
           prevId: prev?.id,
         },
-        ...prev,
+        ...items,
       ]);
     } catch (err) {
       console.error(err);
@@ -641,17 +681,25 @@ export default function App() {
       endState: { ...emptyEndState(), ...d.endState, ...patch },
     });
     setResult((r) => (r ? { ...r, data: merge(r.data) } : r));
-    if (currentBeatId) {
-      setHistory((h) => h.map((item) => (item.id === currentBeatId ? { ...item, generatedData: merge(item.generatedData) } : item)));
+    const id = part?.beatId;
+    if (id) {
+      setHistory((h) => h.map((item) => (item.id === id ? { ...item, generatedData: merge(item.generatedData) } : item)));
     }
   };
 
-  /** Ảnh lưới người dùng đã tạo cho beat đang xem (lưu vào mục lịch sử của beat đó). */
+  /** Ảnh lưới người dùng đã tạo cho phần đang xem (lưu vào mục lịch sử của phần đó). */
   const setGridImage = (img: StoredImage | null) => {
-    if (!currentBeatId) return;
-    setHistory((h) =>
-      h.map((item) => (item.id === currentBeatId ? { ...item, gridImage: img ?? undefined } : item)),
-    );
+    const id = part?.beatId;
+    if (!id) return;
+    setHistory((h) => h.map((item) => (item.id === id ? { ...item, gridImage: img ?? undefined } : item)));
+  };
+
+  /** Chuyển sang xem phần khác; phần đã có prompt thành "beat đang hiển thị" để nối tiếp về sau. */
+  const switchPart = (i: number) => {
+    setActivePart(i);
+    const id = parts[i]?.beatId;
+    if (id) setCurrentBeatId(id);
+    setError('');
   };
 
   // --- Sửa plan ---
@@ -675,9 +723,16 @@ export default function App() {
   const restoreFromHistory = (item: BeatSequence) => {
     setEditorText(item.scriptText);
     setAspect(item.aspect);
-    setPlan(item.plan);
-    setPlanScript(item.scriptText);
-    setResult({ plan: item.plan, data: item.generatedData, aspect: item.aspect });
+    setParts([
+      {
+        id: newId(),
+        script: item.scriptText,
+        plan: item.plan,
+        result: { plan: item.plan, data: item.generatedData, aspect: item.aspect },
+        beatId: item.id,
+      },
+    ]);
+    setActivePart(0);
     // Giữ liên kết với beat trước để "Tạo lại prompt" vẫn nối tiếp đúng.
     setContextBeat(item.prevId ? (history.find((h) => h.id === item.prevId) ?? null) : null);
     setCurrentBeatId(item.id);
@@ -691,9 +746,10 @@ export default function App() {
   };
   const resultRefs = result ? buildRefs(characters, result.plan.refIds, result.data.descriptors) : [];
   const gridRefs = result ? gridImageRefs(result.plan, result.data, characters) : [];
-  const currentBeat = result ? history.find((h) => h.id === currentBeatId) : undefined;
+  const currentBeat = result && part?.beatId ? history.find((h) => h.id === part.beatId) : undefined;
   // Bản mới nhất của beat trước (ảnh lưới / trạng thái cuối có thể được thêm sau khi phân tích panel)
-  const prevBeat = contextBeat ? (history.find((h) => h.id === contextBeat.id) ?? contextBeat) : null;
+  const prevBeat = previousFor(activePart);
+  const totalActions = parts.reduce((n, p) => n + (p.plan.actions?.length ?? 0), 0);
   const dupNames = duplicateRefNames(characters);
   const availableRefs = refCharacters(characters);
   const mentions = useMemo(() => scriptMentions(scriptText, characters), [scriptText, characters]);
@@ -1017,12 +1073,54 @@ export default function App() {
 
         {plan && !isPlanning && (
           <div className="max-w-5xl mx-auto p-4 sm:p-6 lg:p-10 space-y-6 lg:space-y-8">
+            {/* Kịch bản nhiều hành động được chia thành nhiều storyboard, mỗi storyboard một video */}
+            {parts.length > 1 && (
+              <section className="space-y-3">
+                <div className="flex items-start gap-2.5 text-[13px] text-stone-700 bg-gold-light/50 border border-gold-light rounded-2xl px-4 py-3 leading-relaxed">
+                  <LayoutGrid size={15} className="shrink-0 mt-0.5 text-gold-dark" />
+                  <span>
+                    <span className="font-bold">
+                      Kịch bản có {totalActions || 'nhiều'} hành động chính, đã chia thành {parts.length} storyboard.
+                    </span>{' '}
+                    Mỗi storyboard tối đa 2 hành động và tạo thành một video riêng, để Omni có đủ thời gian diễn rõ từng
+                    hành động. Làm lần lượt từ Phần 1; phần sau tự nối tiếp phần trước.
+                  </span>
+                </div>
+                <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+                  {parts.map((pt, i) => (
+                    <button
+                      key={pt.id}
+                      onClick={() => switchPart(i)}
+                      className={`shrink-0 min-w-[150px] max-w-[240px] text-left px-4 py-3 rounded-2xl border transition-colors ${
+                        i === activePart
+                          ? 'bg-black text-white border-black'
+                          : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-50'
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider">
+                        Phần {i + 1}
+                        {pt.beatId && <Check size={13} className={i === activePart ? 'text-gold' : 'text-gold-dark'} />}
+                      </span>
+                      <span className={`block text-xs mt-1 leading-snug line-clamp-2 ${i === activePart ? 'text-stone-300' : 'text-stone-400'}`}>
+                        {pt.plan.actions?.length ? pt.plan.actions.join(' · ') : pt.plan.beatSummary}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {/* Panel plan */}
             <section className="space-y-5">
               <div className="flex items-end justify-between gap-6">
                 <div>
-                  <h2 className="text-xl sm:text-2xl font-black tracking-tight">Panel plan</h2>
+                  <h2 className="text-xl sm:text-2xl font-black tracking-tight">
+                    Panel plan{parts.length > 1 ? ` · Phần ${activePart + 1}/${parts.length}` : ''}
+                  </h2>
                   <p className="text-sm text-stone-400 mt-1">
+                    {plan.actions?.length
+                      ? `Hành động chính: ${plan.actions.join(' · ')}. `
+                      : ''}
                     Sửa nội dung, cỡ cảnh và thời lượng của 4 panel, rồi tạo prompt.
                   </p>
                 </div>
@@ -1046,7 +1144,7 @@ export default function App() {
                 </div>
               )}
 
-              {(contextBeat || activeBible(bible)) && (
+              {(prevBeat || activeBible(bible)) && (
                 <div className="flex flex-col gap-2 text-[13px] text-stone-600 bg-stone-50/70 border border-stone-100 rounded-2xl px-4 py-3 leading-relaxed">
                   {prevBeat && (
                     <div className="flex gap-3">
@@ -1058,7 +1156,9 @@ export default function App() {
                         />
                       )}
                       <p>
-                        <span className="font-bold text-stone-800">Nối tiếp beat trước: </span>
+                        <span className="font-bold text-stone-800">
+                          {activePart > 0 ? `Nối tiếp Phần ${activePart}: ` : 'Nối tiếp beat trước: '}
+                        </span>
                         {prevBeat.plan.beatSummary || prevBeat.scriptText.slice(0, 80)}
                         {prevBeat.generatedData.endState?.positions && (
                           <span className="block text-stone-400">
@@ -1432,6 +1532,19 @@ export default function App() {
                     <span className="font-bold text-stone-700">Âm thanh: </span>
                     {result.data.audioNoteVi}
                   </p>
+                )}
+
+                {activePart < parts.length - 1 && (
+                  <button
+                    onClick={() => {
+                      switchPart(activePart + 1);
+                      setTimeout(() => document.querySelector('main')?.scrollTo({ top: 0, behavior: 'smooth' }), 50);
+                    }}
+                    className="w-full py-4 bg-black text-gold rounded-[20px] font-black text-xs uppercase tracking-[0.15em] flex items-center justify-center gap-2 hover:bg-stone-900 transition-all border border-gold/20"
+                  >
+                    <span>Sang Phần {activePart + 2}</span>
+                    <ArrowRight size={16} />
+                  </button>
                 )}
               </section>
             )}

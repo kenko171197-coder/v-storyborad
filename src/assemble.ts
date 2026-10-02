@@ -15,6 +15,9 @@ import { newId } from './id.ts';
 export const MIN_TOTAL_SEC = 6;
 export const MAX_TOTAL_SEC = 10;
 export const MIN_PANEL_SEC = 1.5;
+/** Một video (một storyboard) chỉ nên chứa tối đa 2 hành động chính: kinh nghiệm làm phim AI là
+ *  khoảng 5 giây cho một hành động, không quá 2 hành động trong 10 giây. */
+export const MAX_ACTIONS_PER_STORYBOARD = 2;
 
 export const PANEL_ROLES: PanelRole[] = ['setup', 'action', 'peak', 'consequence'];
 export const GRID_POSITIONS = ['top-left', 'top-right', 'bottom-left', 'bottom-right'];
@@ -51,6 +54,25 @@ export function totalDuration(plan: PanelPlan): number {
 /** Độ dài clip cần chọn trong Flow (4, 6, 8 hoặc 10 giây) cho tổng thời lượng của plan. */
 export const clipSeconds = (total: number): number =>
   [4, 6, 8, 10].find((x) => x >= total - 0.05) ?? MAX_TOTAL_SEC;
+
+/**
+ * Mốc thời gian dùng trong prompt video: nếu plan ngắn hơn độ dài clip Flow, giãn đều cả 4 panel
+ * (làm tròn 0.5 giây) thay vì dồn phần dư vào panel cuối.
+ */
+export function clipTimeline(plan: PanelPlan): { start: number; end: number }[] {
+  const tl = timeline(plan);
+  const total = tl.length ? tl[tl.length - 1].end : 0;
+  const clip = clipSeconds(total);
+  if (!total || clip <= total) return tl;
+  const k = clip / total;
+  let prev = 0;
+  return tl.map((t, i) => {
+    const end = i === tl.length - 1 ? clip : Math.max(prev + 0.5, Math.round(t.end * k * 2) / 2);
+    const out = { start: prev, end };
+    prev = end;
+    return out;
+  });
+}
 
 export function timeline(plan: PanelPlan): { start: number; end: number }[] {
   let t = 0;
@@ -89,6 +111,13 @@ export function analyzePlan(plan: PanelPlan): string[] {
   } else if (total < MIN_TOTAL_SEC) {
     out.push(
       `Tổng thời lượng ${fmtSec(total)}s hơi ngắn (nên từ ${MIN_TOTAL_SEC}s). Có thể thêm nội dung hoặc kéo dài khoảng lặng.`,
+    );
+  }
+
+  const actions = plan.actions?.filter((a) => a.trim()) ?? [];
+  if (actions.length > MAX_ACTIONS_PER_STORYBOARD) {
+    out.push(
+      `Storyboard này có ${actions.length} hành động chính (nên tối đa ${MAX_ACTIONS_PER_STORYBOARD} cho một video). Video dễ bị vội hoặc bỏ bớt hành động; nên phân tích lại để chia thêm storyboard.`,
     );
   }
 
@@ -474,8 +503,7 @@ export function buildVideoPrompt(
   const mode: TokenMode = format === 'api' ? 'apiVideo' : 'plain';
   const r = (t: string) => stripQuotes(renderTokens(t, refs, mode));
   const clip = clipSeconds(totalDuration(plan));
-  // Panel cuối kéo dài tới hết clip (vd. plan 9.5s, clip Flow 10s), để không có khoảng trống không được mô tả.
-  const tl = timeline(plan).map((t, i, all) => (i === all.length - 1 && clip > t.end ? { ...t, end: clip } : t));
+  const tl = clipTimeline(plan);
   const lines = plan.panels.filter((p) => p.dialogue.trim()).length;
   const board = format === 'api' ? '<IMAGE_REF_0>' : atName(STORYBOARD_VAR);
   const out: string[] = [];
@@ -494,15 +522,15 @@ export function buildVideoPrompt(
   out.push('');
 
   out.push(
-    `Follow ${board} exactly, in order starting top left: panel 1 is the opening, panel 4 is the ending. Use it only as a guide for composition, action and camera; never show the grid or its borders. The whole story takes ${fmtSec(clip)} seconds ${
+    `Follow ${board} exactly, in order starting top left: panel 1 is the opening, panel 4 is the ending. Use it only as a guide for composition, action and camera; never show the grid or its borders. The whole story takes ${fmtSec(clip)} seconds${
       plan.editMode === 'continuous'
-        ? 'in one single continuous shot with no cuts.'
-        : 'with a hard cut between panels, one clean shot per panel.'
+        ? ' in one single continuous shot with no cuts.'
+        : ': four shots with a hard cut between them, one shot per panel.'
     }`,
   );
-  const cast = refs.length ? `Cast: ${identityLine(refs, mode)}` : '';
-  const changed = data.continuityEn ? `Changed since the references: ${sentence(r(data.continuityEn))}` : '';
-  if (cast || changed) out.push([cast, changed].filter(Boolean).join(' '));
+  // Không đưa dòng "Changed since the references" vào video: ảnh lưới đã thể hiện đúng trạng thái,
+  // thêm câu đó dễ làm Omni hiểu sai trạng thái lúc mở đầu.
+  if (refs.length) out.push(`Cast: ${identityLine(refs, mode)}`);
   // Một câu ngắn về phong cách, ánh sáng, bối cảnh: chi tiết đã có trong ảnh lưới, Omni chỉ cần định hướng.
   const look = data.videoLookEn
     ? sentence(r(data.videoLookEn))
@@ -511,24 +539,33 @@ export function buildVideoPrompt(
   if (look || blocking) out.push([look, blocking].filter(Boolean).join(' '));
   out.push('');
 
+  const isNone = (x: string) => !x || /^(none|no|silence|n\/a)$/i.test(x);
+  // "Quiet room tone, Tiny footsteps" -> "quiet room tone, tiny footsteps"
+  const soundList = (x: string) => bare(r(x)).split(/,\s*/).map(lcFirst).join(', ');
+
   data.videoBeats.forEach((b, i) => {
     const t = tl[i];
     const p = plan.panels[i];
     if (!t || !p) return;
-    let line = `[${fmtSec(t.start)}-${fmtSec(t.end)}s] (panel ${i + 1}) ${capFirst(sentence(r(b.camera)))} ${capFirst(sentence(r(b.action)))}`.trim();
+    // Cỡ cảnh lấy từ plan + chuyển động máy, để mỗi cảnh khớp đúng panel tương ứng của ảnh lưới.
+    const shot = [lcFirst(bare(p.shotSize)), lcFirst(bare(r(b.camera)))].filter(Boolean).join(', ');
+    let line = `[${fmtSec(t.start)}-${fmtSec(t.end)}s] Panel ${i + 1}${shot ? `, ${shot}` : ''}: ${capFirst(sentence(r(b.action)))}`;
     if (p.dialogue.trim()) {
       // Omni: dấu hai chấm + thoại KHÔNG ngoặc kép = lời nói; có ngoặc kép = chữ hiện trên hình.
       line += ` ${speakerName(p.speaker.trim()) || 'The character'} says: ${sentence(stripQuotes(p.dialogue.trim()))}`;
     }
+    // Âm thanh gắn vào đúng cảnh nó xảy ra.
+    if (b.sfx && !isNone(bare(b.sfx))) line += ` ${capFirst(sentence(soundList(b.sfx)))}`;
     out.push(line);
   });
   out.push('');
 
   const { ambience, music, sfx } = data.audio;
-  const isNone = (x: string) => !x || /^(none|no|silence|n\/a)$/i.test(x);
-  const sounds = [bare(ambience), bare(sfx)].filter((x) => !isNone(x));
+  const perShotSfx = data.videoBeats.some((b) => b.sfx && !isNone(bare(b.sfx)));
+  // Dòng chung chỉ còn tiếng nền và nhạc; hiệu ứng âm thanh đã nằm trong từng cảnh (project cũ thì giữ ở đây).
+  const sounds = [ambience, perShotSfx ? '' : sfx].map((x) => bare(x)).filter((x) => !isNone(x)).map(soundList);
   const m = bare(music);
-  out.push(`Audio: ${[sounds.join(', '), isNone(m) ? 'no music' : `music: ${m}`].filter(Boolean).join('; ')}.`);
+  out.push(`Audio throughout: ${[sounds.join(', '), isNone(m) ? 'no music' : `music: ${lcFirst(stripQuotes(m))}`].filter(Boolean).join('; ')}.`);
   out.push(
     `No subtitles or on-screen text. ${
       lines ? `Only the ${lines > 1 ? 'lines above are' : 'line above is'} spoken.` : 'No dialogue.'
@@ -609,6 +646,7 @@ export function normalizePlan(raw: any, refIds: string[]): PanelPlan {
     refIds,
     panels,
     warnings: [...aiWarnings, ...notes],
+    actions: Array.isArray(raw?.actions) ? raw.actions.map(str).filter(Boolean) : [],
   };
 }
 
@@ -641,7 +679,7 @@ export function normalizeGenerated(raw: any, refs: RefInfo[]): GeneratedData {
     }),
     videoBeats: Array.from({ length: 4 }, (_, i) => {
       const b = vids[i] ?? {};
-      return { n: i + 1, camera: str(b.camera), action: str(b.action), noteVi: str(b.noteVi) };
+      return { n: i + 1, camera: str(b.camera), action: str(b.action), noteVi: str(b.noteVi), sfx: str(b.sfx) };
     }),
     audio: {
       ambience: str(raw?.audio?.ambience),

@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import {
+  MAX_ACTIONS_PER_STORYBOARD,
   MAX_TOTAL_SEC,
   MIN_TOTAL_SEC,
   activeBible,
@@ -70,69 +71,100 @@ const referenceList = (characters: Character[]) =>
 // ---------------------------------------------------------------------------
 // Bước 1: đề xuất panel plan
 // ---------------------------------------------------------------------------
+const panelSchema = {
+  type: Type.OBJECT,
+  properties: {
+    role: { type: Type.STRING, enum: ['setup', 'action', 'peak', 'consequence'] },
+    moment: { type: Type.STRING },
+    shotSize: { type: Type.STRING },
+    durationSec: { type: Type.NUMBER },
+    speaker: { type: Type.STRING },
+    dialogue: { type: Type.STRING },
+    between: { type: Type.STRING },
+  },
+  required: ['role', 'moment', 'shotSize', 'durationSec', 'speaker', 'dialogue', 'between'],
+};
+
 const planSchema = {
   type: Type.OBJECT,
   properties: {
-    beatSummary: { type: Type.STRING },
-    editMode: { type: Type.STRING, enum: ['continuous', 'cuts'] },
-    refs: { type: Type.ARRAY, items: { type: Type.STRING } },
+    actions: { type: Type.ARRAY, items: { type: Type.STRING } },
     warnings: { type: Type.ARRAY, items: { type: Type.STRING } },
-    panels: {
+    parts: {
       type: Type.ARRAY,
       items: {
         type: Type.OBJECT,
         properties: {
-          role: { type: Type.STRING, enum: ['setup', 'action', 'peak', 'consequence'] },
-          moment: { type: Type.STRING },
-          shotSize: { type: Type.STRING },
-          durationSec: { type: Type.NUMBER },
-          speaker: { type: Type.STRING },
-          dialogue: { type: Type.STRING },
-          between: { type: Type.STRING },
+          actions: { type: Type.ARRAY, items: { type: Type.STRING } },
+          script: { type: Type.STRING },
+          beatSummary: { type: Type.STRING },
+          editMode: { type: Type.STRING, enum: ['continuous', 'cuts'] },
+          refs: { type: Type.ARRAY, items: { type: Type.STRING } },
+          warnings: { type: Type.ARRAY, items: { type: Type.STRING } },
+          panels: { type: Type.ARRAY, items: panelSchema },
         },
-        required: ['role', 'moment', 'shotSize', 'durationSec', 'speaker', 'dialogue', 'between'],
+        required: ['actions', 'script', 'beatSummary', 'editMode', 'refs', 'warnings', 'panels'],
       },
     },
   },
-  required: ['beatSummary', 'editMode', 'refs', 'warnings', 'panels'],
+  required: ['actions', 'warnings', 'parts'],
 };
+
+/** Một storyboard (một video) sau khi chia kịch bản. */
+export interface PlannedPart {
+  /** Đoạn kịch bản mà storyboard này diễn */
+  script: string;
+  plan: PanelPlan;
+}
+
+/** Số storyboard tối đa cho một lần phân tích (tránh AI chia vụn). */
+const MAX_PARTS = 6;
 
 export async function planBeat(
   scriptText: string,
   characters: Character[],
   previous: BeatSequence | null,
   bible: SceneBible | null = null,
-): Promise<PanelPlan> {
+): Promise<PlannedPart[]> {
   const available = refCharacters(characters);
   const scene = bibleText(bible, characters, buildRefs(characters, available.map((c) => c.id)));
   const context = previous
-    ? `This beat CONTINUES the previous beat. Panel 1 must start from the state where the previous beat ended.\n${describePreviousBeat(previous)}`
-    : 'This beat is STANDALONE. Do not assume any earlier context.';
+    ? `This script CONTINUES the previous beat. Panel 1 of the first storyboard must start from the state where the previous beat ended.\n${describePreviousBeat(previous)}`
+    : 'This script is STANDALONE. Do not assume any earlier context.';
 
-  const prompt = `You are a storyboard planner for an AI video generator (Gemini Omni 1.1 Flash). Each video is at most ${MAX_TOTAL_SEC} seconds.
-The script below is ONE beat. Turn it into EXACTLY 4 keyframe panels for a 2x2 storyboard grid (read left-to-right, top-to-bottom).
+  const prompt = `You are a storyboard planner for an AI video generator (Gemini Omni 1.1 Flash). Each generated video is at most ${MAX_TOTAL_SEC} seconds and is driven by ONE 2x2 storyboard grid of exactly 4 keyframe panels (read left-to-right, top-to-bottom).
 
 ${context}
 ${scene ? `\n${scene}\nPlan the panels so they fit this location and keep the screen direction.\n` : ''}
-METHOD
-1. List what CHANGES in the beat: a new action, a discovery, an emotion shift, an important line of dialogue.
-2. Pick exactly 4 keyframes.
-   - If there are more than 4 changes: keep the 4 most important (opening, turning point, peak, ending). Put the smaller actions in the "between" field of the panel they happen after. Never drop story content silently.
-   - If there are fewer than 4: use the pattern setup -> action -> peak -> consequence (before the action, during, the peak moment, the aftermath/reaction/pause), each with a different framing.
-3. Each panel freezes ONE main action at its clearest moment. It is a still keyframe, not a sequence.
-4. Give adjacent panels different framing so the four beats have rhythm, yet keep them continuous: same characters, objects, costumes, location and lighting. If the beat is one continuous shot (editMode "continuous"), every framing change must be reachable by moving the camera (push in, pull back, pan, follow) within the panel's seconds, so keep the changes moderate; big jumps such as wide shot to extreme close-up need editMode "cuts".
+STEP 1 - MAIN ACTIONS
+List the MAIN ACTIONS of the script in story order. A main action is one distinct physical event or story change that needs its own screen time: someone appears, moves somewhere, grabs or uses something, escapes, reacts strongly, or says an important line. Small connecting movements inside the same action (a glance, a step, turning around) are NOT main actions.
+
+STEP 2 - SPLIT INTO STORYBOARDS
+Professional AI video practice: about one main action per 5 seconds and never more than ${MAX_ACTIONS_PER_STORYBOARD} main actions in one 10-second video; overloaded clips come out rushed or silently drop actions.
+- Each storyboard ("part") covers at most ${MAX_ACTIONS_PER_STORYBOARD} consecutive main actions. If the script has more, split it into several parts, in story order, at natural story points. Never drop a main action and never squeeze extra main actions into a part.
+- If the script has only 1 or 2 main actions, return exactly 1 part.
+- Part 2 onward starts exactly where the previous part ends (same positions, props, lighting).
+
+STEP 3 - 4 PANELS PER PART
+For each part, make EXACTLY 4 keyframe panels that are the beats of its 1-2 main actions: setup -> action -> peak -> consequence (before, during, the peak moment, the aftermath or a reaction). With 2 actions, give each action 2 panels. Each panel freezes ONE clear moment; it is a still keyframe, not a sequence.
+- Give adjacent panels different framing so the beats have rhythm, yet keep them continuous: same characters, objects, costumes, location and lighting. If the part is one continuous shot (editMode "continuous"), every framing change must be reachable by moving the camera (push in, pull back, pan, follow) within the panel's seconds, so keep the changes moderate; big jumps such as wide shot to extreme close-up need editMode "cuts".
 
 FIELDS
-- role: setup | action | peak | consequence.
-- moment: what is visible in this frozen moment, written in VIETNAMESE, one or two short sentences.
-- shotSize: short English cinematic term (e.g. "Wide shot", "Medium shot", "Close-up", "Extreme close-up", "Over-the-shoulder").
-- durationSec: seconds this panel occupies in the video. Simple action ~2s. Complex action or emotion that needs to land: 3-4s. A panel with dialogue must be long enough to speak the line (about 2.5 English words per second, or about 4 Vietnamese syllables per second). Total of all four MUST be between ${MIN_TOTAL_SEC} and ${MAX_TOTAL_SEC} seconds.
-- speaker / dialogue: the spoken line for this panel, copied VERBATIM from the script (do not translate or rewrite). Empty strings if nobody speaks.
-- between: minor actions that happen between this panel and the next, in VIETNAMESE. Empty string if none.
-- beatSummary: one Vietnamese sentence summarising the beat.
-- editMode: "continuous" if the beat is one place/time and the camera can flow through it as one shot; "cuts" if the beat naturally jumps between separate shots or locations.
-- refs: the EXACT names (from the REFERENCES list) of every reference that appears on screen in this beat. References can be characters or objects. Do not include references that do not appear.
-- warnings: Vietnamese sentences, only when useful. If the content clearly needs more than ${MAX_TOTAL_SEC}s, still return 4 panels totalling ${MAX_TOTAL_SEC}s and warn that the beat should be split. If the content is very thin (under ${MIN_TOTAL_SEC}s), warn and suggest what to add. Otherwise return an empty array.
+- actions (top level): every main action of the script, in VIETNAMESE, a few words each.
+- warnings (top level): Vietnamese sentences, only when useful (e.g. the script is very thin). Otherwise an empty array.
+- parts[].actions: the 1-${MAX_ACTIONS_PER_STORYBOARD} main actions this part covers, copied from the top-level list.
+- parts[].script: the lines of the original script this part covers, copied VERBATIM (keep @names and dialogue unchanged; you may cut a sentence at a natural point).
+- parts[].beatSummary: one Vietnamese sentence summarising the part.
+- parts[].editMode: "continuous" if the part is one place/time and the camera can flow through it as one shot; "cuts" if it naturally jumps between separate shots.
+- parts[].refs: the EXACT names (from the REFERENCES list) of every reference that appears on screen in this part. Do not include references that do not appear.
+- parts[].warnings: Vietnamese sentences, only when useful. Otherwise an empty array.
+- parts[].panels (exactly 4):
+  - role: setup | action | peak | consequence.
+  - moment: what is visible in this frozen moment, written in VIETNAMESE, one or two short sentences.
+  - shotSize: short English cinematic term (e.g. "Wide shot", "Medium shot", "Close-up", "Extreme close-up", "Over-the-shoulder").
+  - durationSec: seconds this panel occupies in the video. Give each main action at least 4 seconds in total. A panel with dialogue must be long enough to speak the line (about 2.5 English words per second, or about 4 Vietnamese syllables per second). The 4 panels of a part total between ${MIN_TOTAL_SEC} and ${MAX_TOTAL_SEC} seconds.
+  - speaker / dialogue: the spoken line for this panel, copied VERBATIM from the script (do not translate or rewrite). Empty strings if nobody speaks.
+  - between: small movements that connect this panel to the next, in VIETNAMESE. Empty string if none. Never put a main action here.
 
 Do not invent plot beyond the script. Small connecting actions are fine.
 
@@ -149,8 +181,24 @@ ${scriptText}`;
   });
 
   const raw = JSON.parse(response.text || '{}');
-  const aiNames: string[] = Array.isArray(raw?.refs) ? raw.refs.filter((x: unknown) => typeof x === 'string') : [];
-  return normalizePlan(raw, detectRefIds(characters, scriptText, aiNames));
+  const names = (x: unknown): string[] => (Array.isArray(x) ? x.filter((n): n is string => typeof n === 'string') : []);
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  // Kết quả kiểu cũ (một plan, không có "parts") vẫn đọc được.
+  const rawParts: any[] = (Array.isArray(raw?.parts) && raw.parts.length ? raw.parts : [raw]).slice(0, MAX_PARTS);
+  const topWarnings = names(raw?.warnings);
+  if (Array.isArray(raw?.parts) && raw.parts.length > MAX_PARTS) {
+    topWarnings.push(`AI chia thành ${raw.parts.length} storyboard, đã giữ ${MAX_PARTS} phần đầu. Nên tách kịch bản ngắn lại.`);
+  }
+
+  return rawParts.map((rp, i) => {
+    const partScript = str(rp?.script) || scriptText;
+    // Tham chiếu của phần: tên AI liệt kê cho phần + @tên trong đoạn kịch bản của phần.
+    let refIds = detectRefIds(characters, partScript, names(rp?.refs));
+    if (!refIds.length) refIds = detectRefIds(characters, scriptText, names(rp?.refs));
+    const plan = normalizePlan(rp, refIds);
+    if (i === 0 && topWarnings.length) plan.warnings = [...topWarnings, ...plan.warnings];
+    return { script: partScript, plan };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -173,9 +221,10 @@ const videoBeatSchema = {
   properties: {
     camera: { type: Type.STRING },
     action: { type: Type.STRING },
+    sfx: { type: Type.STRING },
     noteVi: { type: Type.STRING },
   },
-  required: ['camera', 'action', 'noteVi'],
+  required: ['camera', 'action', 'sfx', 'noteVi'],
 };
 
 const generatedSchema = {
@@ -294,7 +343,7 @@ The approved PANEL PLAN below is authoritative. Do not add, remove, reorder or c
 ${planText}
 
 Beat summary: ${plan.beatSummary}
-Edit mode: ${plan.editMode === 'continuous' ? 'one continuous shot' : 'hard cuts between beats'}
+${plan.actions?.length ? `Main actions of this storyboard (the whole video shows only these): ${plan.actions.join('; ')}\n` : ''}Edit mode: ${plan.editMode === 'continuous' ? 'one continuous shot' : 'hard cuts between panels, one shot per panel'}
 ${scene ? `\n${scene}\n` : ''}
 REFERENCES IN THIS BEAT (characters or objects; their images are attached in this order)
 ${refText}
@@ -322,16 +371,25 @@ ${
   - lens: focal length feel and depth of field.
   - detailsVi: Vietnamese description of mood, context and action of the panel.
 - videoBeats (exactly 4, same order as the plan). Each describes only what happens inside that panel's time window:
-  - camera: camera movement with speed (e.g. "Slow dolly-in", "Static", "Handheld follow"). When edit mode is one continuous shot, reach each panel's planned framing by moving the camera from the previous panel (e.g. "Slow push-in to a close-up"), so the movement flows from one beat into the next.
-  - action: what moves and happens in order (use "first ... then ..." when there are several actions), including the "between" actions from the plan. Keep it realistic for the number of seconds available. NEVER include spoken dialogue here (it is added separately).
+  - camera: camera movement only, with speed (e.g. "static camera", "slow push-in", "handheld follow"); the shot size is added automatically, do not repeat it. ${
+    plan.editMode === 'continuous'
+      ? "The video is one continuous shot: reach each panel's planned framing by moving the camera from the previous panel (e.g. \"slow push-in to a close-up\"), so the movement flows from one beat into the next."
+      : 'The video cuts between panels: one camera behaviour per shot.'
+  }
+  - action: ONE clear action for this panel's seconds, the moment shown in its keyframe. ${
+    plan.editMode === 'continuous'
+      ? 'Include the small "between" movements from the plan that lead into the next panel.'
+      : 'Show only this panel\'s moment; movement from one panel to the next happens across the cut, so do not include it.'
+  } Never pack several actions into one panel (no "first ... then ... then ..."); overloaded shots come out rushed. For a reaction shot, say what the character is looking at or reacting to (e.g. "{{${refs[0]?.name ?? 'name'}}} stares at the empty trap"). NEVER include spoken dialogue here (it is added separately).
+  - sfx: the sound effect heard during this panel, a few English words (e.g. "a soft squeak", "a cartoon whoosh"), or "none".
   - noteVi: a short Vietnamese explanation of this beat.
-- audio: concrete ambience, music and sound effects that fit the beat (use "none" when silence is intended). Do not end these fields with punctuation. audioNoteVi: short Vietnamese explanation.
+- audio: ambience and music that run through the whole beat, and a short summary of its sound effects (use "none" when silence is intended). Lower-case phrases; do not end these fields with punctuation. audioNoteVi: short Vietnamese explanation.
 - videoLookEn: ONE short English sentence (at most 20 words) for the video prompt: rendering style, lighting and place, e.g. "Stylised 3D animated film, warm afternoon light in a small kitchen".${
     locked ? ' It must be a faithful summary of the locked scene bible.' : ''
   } The storyboard image carries the details, so keep it short.
 - continuityEn: ${
     previous
-      ? 'ONE English sentence listing the changes from the previous END STATE that must still be visible in this beat (e.g. "{{cho}} no longer wears its collar; a broken plate lies on the floor"). Use tokens for references. Empty string if nothing carries over.'
+      ? 'ONE English sentence describing how things look at the START of this beat because of the previous END STATE: changes from the reference images that are already visible when panel 1 begins (e.g. "{{cho}} no longer wears its collar; a broken plate lies on the floor"). NEVER mention anything that happens during this beat. Use tokens for references. Empty string if nothing carries over.'
       : 'return an empty string (this beat does not continue another beat).'
   }
 - endState (VIETNAMESE, short and concrete): the exact state at the END of panel 4, so the next beat can continue from it.

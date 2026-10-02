@@ -17,6 +17,14 @@ Tham chiếu gồm cả nhân vật và vật dụng có ảnh. Chỉ những th
 
 Tổng thời lượng 4 panel không được vượt 10 giây (giới hạn của Omni cho mỗi lần tạo).
 
+## Tự chia storyboard theo số hành động
+
+Kinh nghiệm làm phim AI: khoảng 5 giây cho một hành động, không quá 2 hành động chính trong một video 10 giây; nhồi nhiều hơn thì video bị vội hoặc bỏ bớt hành động.
+
+- Bấm **Phân tích panel**: AI liệt kê các hành động chính của kịch bản rồi chia thành nhiều storyboard, mỗi storyboard tối đa 2 hành động (4 panel là các nhịp của 1–2 hành động đó) và là một video riêng.
+- Các phần hiện thành tab **Phần 1, 2, 3…**. Làm lần lượt: phần sau chỉ tạo prompt được khi phần trước đã có prompt, và tự nối tiếp phần trước (trạng thái cuối, ảnh lưới đã tạo làm `@prev_storyboard`). Nút **Sang Phần n** ở cuối phần kết quả.
+- Kịch bản chỉ có 1–2 hành động thì vẫn là một storyboard như trước.
+
 ## Đồng bộ các beat trong cùng một cảnh
 
 - **Hồ sơ cảnh** (thẻ ở thanh bên, dưới phần Tham chiếu): phong cách, bối cảnh, vị trí/hướng nhân vật (trục 180°) và mô tả cố định của từng tham chiếu, viết bằng tiếng Anh, gọi tham chiếu bằng `@tên`.
@@ -32,7 +40,7 @@ Tổng thời lượng 4 panel không được vượt 10 giây (giới hạn c�
 Theo hướng dẫn prompt của Nano Banana và Gemini Omni (đã thử trên Flow):
 
 - **Ảnh lưới**: định dạng lưới + phong cách → nhân vật (Cast) + thay đổi so với ảnh tham chiếu → bối cảnh và hướng nhân vật (nói một lần) → ảnh lưới beat trước → 4 dòng panel (khung hình, ống kính: hành động) → câu "Clean frames" viết dạng mô tả thay vì liệt kê điều cấm.
-- **Video**: "Follow @storyboard exactly…" kèm tổng thời lượng bằng đúng độ dài clip Flow (4/6/8/10 giây, panel cuối kéo tới hết clip) → nhân vật + thay đổi → một câu ngắn về phong cách, ánh sáng, bối cảnh → các mốc thời gian → âm thanh → không phụ đề → vai trò ảnh tham chiếu. Thoại viết sau dấu hai chấm, không ngoặc kép.
+- **Video**: "Follow @storyboard exactly…" kèm tổng thời lượng bằng đúng độ dài clip Flow (4/6/8/10 giây; nếu plan ngắn hơn thì giãn đều cả 4 panel) → nhân vật → một câu ngắn về phong cách, ánh sáng, bối cảnh → mỗi panel một dòng `[giây] Panel n, cỡ cảnh, chuyển động máy: một hành động. Âm thanh của cảnh.` → tiếng nền và nhạc → không phụ đề → vai trò ảnh tham chiếu. Thoại viết sau dấu hai chấm, không ngoặc kép. Không đưa dòng "Changed since the references" vào video (ảnh lưới đã thể hiện trạng thái).
 
 ## Cấu trúc mã
 
